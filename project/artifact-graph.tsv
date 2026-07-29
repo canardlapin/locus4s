@@ -1,0 +1,8 @@
+# node	kind	artifact
+node	internal	locus4s-core
+node	internal	locus4s-data
+node	internal	locus4s-laws
+# edge	consumer	dependency
+edge	locus4s-data	locus4s-core
+edge	locus4s-laws	locus4s-core
+edge	locus4s-laws	locus4s-data
