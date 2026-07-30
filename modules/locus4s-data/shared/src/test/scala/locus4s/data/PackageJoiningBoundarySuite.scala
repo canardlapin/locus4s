@@ -4,84 +4,59 @@ import munit.FunSuite
 import scala.compiletime.testing.typeCheckErrors
 
 final class PackageJoiningBoundarySuite extends FunSuite:
-  test("consumers cannot construct fields or call ownership-taking internals"):
-    val packageJoiningControl = typeCheckErrors(
+  test("typed field lookup is total for its owner"):
+    val errors = typeCheckErrors(
       """
         import locus4s.*
-        def checked[S, A](
-          space: FiniteSpace[S],
-          values: Vector[A]
-        ) =
-          IndexedField.fromValues(space, values)
+        import locus4s.data.*
+        def lookup[S, A](field: Field[S, A], index: Index[S]): A =
+          field(index)
       """
     )
+    assertEquals(errors, Nil)
+
+  test("field lookup rejects an unrelated owner type"):
+    val errors = typeCheckErrors(
+      """
+        import locus4s.*
+        import locus4s.data.*
+        def invalid[A, B](
+          field: Field[A, Int],
+          index: Index[B]
+        ): Int =
+          field(index)
+      """
+    )
+    assert(errors.nonEmpty)
+
+  test("consumers cannot construct concrete fields or call owned factories"):
     val constructorErrors = typeCheckErrors(
       """
         import locus4s.*
-        def forge[S, A](space: FiniteSpace[S], values: Vector[A]) =
-          new IndexedField(space, values)
+        import locus4s.data.*
+        def forge[S, A](space: FiniteDomain[S], values: Vector[A]) =
+          new VectorField(space, values)
       """
     )
     val ownedFactoryErrors = typeCheckErrors(
       """
         import locus4s.*
-        def forge[S, A](space: FiniteSpace[S], values: Vector[A]) =
-          IndexedField.fromOwned(space, values)
-      """
-    )
-    val ordinalLookupErrors = typeCheckErrors(
-      """
-        def forge[S, A](field: IndexedField[S, A]) =
-          field.valueAtOwnedOrdinal(0)
-      """
-    )
-    val sectionConstructorErrors = typeCheckErrors(
-      """
-        import locus4s.*
-        def forge[S, A](
-          field: IndexedField[S, A],
-          support: Region[S]
-        ) =
-          new Section(field, support)
+        import locus4s.data.*
+        def forge[S, A](space: FiniteDomain[S], values: Vector[A]) =
+          VectorField.fromOwned(space, values)
       """
     )
 
-    assertEquals(packageJoiningControl, Nil)
     assert(constructorErrors.nonEmpty)
     assert(ownedFactoryErrors.nonEmpty)
-    assert(ordinalLookupErrors.nonEmpty)
-    assert(sectionConstructorErrors.nonEmpty)
 
-  test("field lookup cannot silently bypass runtime-domain validation"):
+  test("data foundation exposes no imaging policy API"):
     val errors = typeCheckErrors(
       """
-        import locus4s.*
-        def unsafe[S, A](field: IndexedField[S, A], point: Point[S]): A =
-          field(point)
+        import locus4s.data.*
+        val parcellation = Parcellation
+        val searchlight = Searchlight
+        val image: Image[?, ?, ?, ?, ?] = ???
       """
     )
     assert(errors.nonEmpty)
-
-  test("data foundation exposes no parcellation, searchlight, or image API"):
-    val parcellationErrors = typeCheckErrors(
-      """
-        import locus4s.data.*
-        val value = Parcellation
-      """
-    )
-    val searchlightErrors = typeCheckErrors(
-      """
-        import locus4s.data.*
-        val value = Searchlight
-      """
-    )
-    val imagingErrors = typeCheckErrors(
-      """
-        import locus4s.data.*
-        val value: Image[?, ?, ?, ?, ?] = ???
-      """
-    )
-
-    assert(parcellationErrors.nonEmpty)
-    assert(searchlightErrors.nonEmpty)
-    assert(imagingErrors.nonEmpty)

@@ -66,3 +66,14 @@ lazy val root =
 
 addCommandAlias("compileAll", ";root/compile")
 addCommandAlias("testAll", ";root/test")
+addCommandAlias(
+  "testFullOptJS",
+  ";set Global / scalaJSStage := FullOptStage;" +
+    "locus4s-coreJS/test;" +
+    "locus4s-dataJS/test;" +
+    "locus4s-lawsJS/test"
+)
+addCommandAlias(
+  "checkAll",
+  ";scalafmtCheckAll;scalafmtSbtCheck;compileAll;testAll"
+)

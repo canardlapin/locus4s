@@ -2,208 +2,390 @@ package locus4s
 
 enum RelationError:
   case WrongRowCount(expected: Int, actual: Int)
+  case WrongOffsetCount(expected: Int, actual: Int)
+  case FirstOffsetNotZero(actual: Int)
+  case OffsetsNotMonotonic(position: Int, previous: Int, current: Int)
+  case FinalOffsetMismatch(expected: Int, actual: Int)
   case TargetOutOfBounds(
       sourceOrdinal: Int,
       position: Int,
       targetOrdinal: Int,
       targetSize: Int
   )
+  case RowNotStrictlyIncreasing(
+      sourceOrdinal: Int,
+      position: Int,
+      previous: Int,
+      current: Int
+  )
+  case RowOffsetCountOverflow(sourceSize: Int)
 
   def message: String =
     this match
       case WrongRowCount(expected, actual) =>
         s"relation requires $expected rows, found $actual"
+      case WrongOffsetCount(expected, actual) =>
+        s"CSR relation requires $expected row offsets, found $actual"
+      case FirstOffsetNotZero(actual) =>
+        s"CSR relation first row offset must be 0, found $actual"
+      case OffsetsNotMonotonic(position, previous, current) =>
+        s"CSR offsets must be monotonic; offset $position is $current after $previous"
+      case FinalOffsetMismatch(expected, actual) =>
+        s"CSR final offset must equal target count $expected, found $actual"
       case TargetOutOfBounds(source, position, target, size) =>
         s"relation row $source target at position $position is outside " +
           s"[0, $size): $target"
+      case RowNotStrictlyIncreasing(source, position, previous, current) =>
+        s"relation row $source must be strictly increasing; position $position " +
+          s"contains $current after $previous"
+      case RowOffsetCountOverflow(sourceSize) =>
+        s"a non-empty CSR relation over $sourceSize source indices cannot " +
+          "represent sourceSize + 1 row offsets in a JVM/Scala.js array"
 
-enum RelationQueryError:
-  case ForeignSource(error: PointError)
-  case ForeignTarget(error: PointError)
-
-  def message: String =
-    this match
-      case ForeignSource(error) =>
-        s"invalid relation source: ${error.message}"
-      case ForeignTarget(error) =>
-        s"invalid relation target: ${error.message}"
-
-/** An immutable binary relation between two finite domains. */
+/** Immutable sparse Boolean relation in compressed sparse row form.
+  *
+  * Row traversal is O(row degree), and materializing a row allocates only in proportion
+  * to that degree. Sparse composition visits relation edges and sorts/deduplicates only
+  * the targets reached for each source; it never initializes a target-sized dense
+  * marker array per row.
+  */
 final class Relation[X, Y] private (
-    val from: FiniteSpace[X],
-    val to: FiniteSpace[Y],
-    private val rows: Array[Array[Int]]
+    val from: FiniteDomain[X],
+    val to: FiniteDomain[Y],
+    private val rowOffsets: IntBuffer,
+    private val targets: IntBuffer,
+    private val emptyRepresentation: Boolean
 ):
-  def row(point: Point[X]): Either[PointError, Region[Y]] =
-    from
-      .validate(point)
-      .map: source =>
-        Region.tabulate(to): target =>
-          containsOrdinal(rows(source), target.value)
+  def pairCount: Int =
+    targets.length
+
+  def isEmpty: Boolean =
+    emptyRepresentation
+
+  /** Materialized sparse row in O(row degree), never O(target size). */
+  def row(source: Index[X]): Region[Y] =
+    val (start, end) = rowBounds(source.ordinal)
+    val builder = Region.newBuilder(to)
+    var position = start
+    while position < end do
+      builder.add(to.indexAtOrdinal(targets(position)))
+      position += 1
+    builder.result()
+
+  def foreachTarget(
+      source: Index[X]
+  )(f: Index[Y] => Unit): Unit =
+    val (start, end) = rowBounds(source.ordinal)
+    var position = start
+    while position < end do
+      f(to.indexAtOrdinal(targets(position)))
+      position += 1
+
+  def hasTargets(source: Index[X]): Boolean =
+    val (start, end) = rowBounds(source.ordinal)
+    start < end
 
   def isRelated(
-      source: Point[X],
-      target: Point[Y]
-  ): Either[RelationQueryError, Boolean] =
-    from.validate(source) match
-      case Left(error) =>
-        Left(RelationQueryError.ForeignSource(error))
-      case Right(sourceOrdinal) =>
-        to.validate(target) match
-          case Left(error) =>
-            Left(RelationQueryError.ForeignTarget(error))
-          case Right(targetOrdinal) =>
-            Right(containsOrdinal(rows(sourceOrdinal), targetOrdinal))
+      source: Index[X],
+      target: Index[Y]
+  ): Boolean =
+    val (start, end) = rowBounds(source.ordinal)
+    Relation.binarySearch(targets, start, end, target.ordinal)
 
-  def andThen[Z](
-      that: Relation[Y, Z]
+  def andThen[Z](that: Relation[Y, Z]): Relation[X, Z] =
+    if isEmpty || that.isEmpty then Relation.empty(from, that.to)
+    else
+      val offsets = Array.ofDim[Int](from.size + 1)
+      val output = Array.newBuilder[Int]
+      var outputSize = 0
+      var source = 0
+      while source < from.size do
+        val reached = Array.newBuilder[Int]
+        val (middleStart, middleEnd) = rowBounds(source)
+        var middlePosition = middleStart
+        while middlePosition < middleEnd do
+          val middle = targets(middlePosition)
+          val (targetStart, targetEnd) = that.rowBounds(middle)
+          var targetPosition = targetStart
+          while targetPosition < targetEnd do
+            reached += that.targets(targetPosition)
+            targetPosition += 1
+          middlePosition += 1
+
+        val canonical = Relation.sortedDistinct(reached.result())
+        output ++= canonical
+        outputSize += canonical.length
+        offsets(source + 1) = outputSize
+        source += 1
+
+      Relation.fromOwnedCsr(from, that.to, offsets, output.result())
+
+  def andThenChecked[M, Z](
+      that: Relation[M, Z]
   ): Either[SpaceMismatch, Relation[X, Z]] =
     if to.sameRuntimeOwnerAs(that.from) then
-      val composed = Array.ofDim[Array[Int]](from.size)
-      var source = 0
-      while source < from.size do
-        val included = Array.fill(that.to.size)(false)
-        val intermediates = rows(source)
-        var middleIndex = 0
-        while middleIndex < intermediates.length do
-          val targets = that.rows(intermediates(middleIndex))
-          var targetIndex = 0
-          while targetIndex < targets.length do
-            included(targets(targetIndex)) = true
-            targetIndex += 1
-          middleIndex += 1
-        composed(source) = Relation.ordinalsWhere(included)
-        source += 1
-      Right(Relation.fromValidated(from, that.to, composed))
-    else
-      Left(to.mismatch(that.from))
+      Right(
+        andThen(
+          new Relation(
+            to,
+            that.to,
+            that.rowOffsets,
+            that.targets,
+            that.emptyRepresentation
+          )
+        )
+      )
+    else Left(to.mismatch(that.from))
 
   def converse: Relation[Y, X] =
-    val builders = Array.fill(to.size)(Array.newBuilder[Int])
-    var source = 0
-    while source < rows.length do
-      val targets = rows(source)
-      var index = 0
-      while index < targets.length do
-        builders(targets(index)) += source
-        index += 1
-      source += 1
-    Relation.fromValidated(to, from, builders.map(_.result()))
-
-  def union(
-      that: Relation[X, Y]
-  ): Either[SpaceMismatch, Relation[X, Y]] =
-    if !from.sameRuntimeOwnerAs(that.from) then
-      Left(from.mismatch(that.from))
-    else if !to.sameRuntimeOwnerAs(that.to) then
-      Left(to.mismatch(that.to))
+    if isEmpty then Relation.empty(to, from)
     else
-      val combined = Array.ofDim[Array[Int]](from.size)
+      val counts = Array.ofDim[Int](to.size)
+      var position = 0
+      while position < targets.length do
+        counts(targets(position)) += 1
+        position += 1
+
+      val offsets = Array.ofDim[Int](to.size + 1)
+      var target = 0
+      while target < to.size do
+        offsets(target + 1) = offsets(target) + counts(target)
+        target += 1
+
+      val next = offsets.clone()
+      val reversedTargets = Array.ofDim[Int](targets.length)
       var source = 0
       while source < from.size do
-        combined(source) = Relation.mergeUnion(rows(source), that.rows(source))
+        val (start, end) = rowBounds(source)
+        var rowPosition = start
+        while rowPosition < end do
+          val relatedTarget = targets(rowPosition)
+          val outputPosition = next(relatedTarget)
+          reversedTargets(outputPosition) = source
+          next(relatedTarget) += 1
+          rowPosition += 1
         source += 1
-      Right(Relation.fromValidated(from, to, combined))
 
-  def subsetOf(
-      that: Relation[X, Y]
-  ): Either[SpaceMismatch, Boolean] =
-    if !from.sameRuntimeOwnerAs(that.from) then
-      Left(from.mismatch(that.from))
-    else if !to.sameRuntimeOwnerAs(that.to) then
-      Left(to.mismatch(that.to))
+      Relation.fromOwnedCsr(to, from, offsets, reversedTargets)
+
+  def union(that: Relation[X, Y]): Relation[X, Y] =
+    if isEmpty then
+      new Relation(
+        from,
+        to,
+        that.rowOffsets,
+        that.targets,
+        that.emptyRepresentation
+      )
+    else if that.isEmpty then this
+    else combineRows(that, Relation.RowOperation.Union)
+
+  def intersect(that: Relation[X, Y]): Relation[X, Y] =
+    if isEmpty || that.isEmpty then Relation.empty(from, to)
+    else combineRows(that, Relation.RowOperation.Intersection)
+
+  def subsetOf(that: Relation[X, Y]): Boolean =
+    if isEmpty then true
+    else if that.isEmpty then false
     else
       var source = 0
       var subset = true
       while source < from.size && subset do
-        subset = Relation.sortedSubset(rows(source), that.rows(source))
+        val (leftStart, leftEnd) = rowBounds(source)
+        val (rightStart, rightEnd) = that.rowBounds(source)
+        subset = Relation.sortedSubset(
+          targets,
+          leftStart,
+          leftEnd,
+          that.targets,
+          rightStart,
+          rightEnd
+        )
         source += 1
-      Right(subset)
+      subset
 
-  def image(region: Region[X]): Either[SpaceMismatch, Region[Y]] =
-    if from.sameRuntimeOwnerAs(region.space) then
-      val included = Array.fill(to.size)(false)
-      val sources = region.ordinalsInDomainOrder
-      var sourceIndex = 0
-      while sourceIndex < sources.length do
-        val targets = rows(sources(sourceIndex))
-        var targetIndex = 0
-        while targetIndex < targets.length do
-          included(targets(targetIndex)) = true
-          targetIndex += 1
-        sourceIndex += 1
-      Right(Region.tabulate(to)(point => included(point.value)))
+  def unionChecked[A, B](
+      that: Relation[A, B]
+  ): Either[SpaceMismatch, Relation[X, Y]] =
+    checkedOperand(that).map(union)
+
+  def intersectChecked[A, B](
+      that: Relation[A, B]
+  ): Either[SpaceMismatch, Relation[X, Y]] =
+    checkedOperand(that).map(intersect)
+
+  def subsetOfChecked[A, B](
+      that: Relation[A, B]
+  ): Either[SpaceMismatch, Boolean] =
+    checkedOperand(that).map(subsetOf)
+
+  /** Sparse image with work tied to visited rows plus output canonicalization. */
+  def image(region: Region[X]): Region[Y] =
+    if isEmpty || region.isEmpty then Region.empty(to)
     else
-      Left(from.mismatch(region.space))
+      val builder = Region.newBuilder(to)
+      region.foreachIndex: source =>
+        foreachTarget(source)(builder.add)
+      builder.result()
 
+  def imageChecked[T](
+      region: Region[T]
+  ): Either[SpaceMismatch, Region[Y]] =
+    if from.sameRuntimeOwnerAs(region.space) then
+      from.align(region.space) match
+        case Right(alignment) =>
+          Right(image(alignment.reverse.transport(region)))
+        case Left(_) =>
+          Left(from.mismatch(region.space))
+    else Left(from.mismatch(region.space))
+
+  /** O(1) source-owner transport sharing CSR storage. */
+  def rebindFrom[A](
+      alignment: DomainAlignment[X, A]
+  ): Relation[A, Y] =
+    new Relation(
+      alignment.right,
+      to,
+      rowOffsets,
+      targets,
+      emptyRepresentation
+    )
+
+  /** O(1) target-owner transport sharing CSR storage. */
+  def rebindTo[B](
+      alignment: DomainAlignment[Y, B]
+  ): Relation[X, B] =
+    new Relation(
+      from,
+      alignment.right,
+      rowOffsets,
+      targets,
+      emptyRepresentation
+    )
+
+  /** Dynamic-boundary defensive CSR copy.
+    *
+    * Empty relations use empty offset and target arrays rather than expanding an
+    * all-zero offset array. Non-empty copies cost O(source size + pair count).
+    */
+  def csr: Relation.Csr =
+    if emptyRepresentation then
+      Relation.Csr(
+        Array.emptyIntArray,
+        Array.emptyIntArray
+      )
+    else Relation.Csr(rowOffsets.toArray, targets.toArray)
+
+  /** Compatibility copy of canonical rows. O(|from| + pairCount). */
   def ordinalRows: Array[Array[Int]] =
-    rows.map(_.clone())
+    Array.tabulate(from.size): source =>
+      val (start, end) = rowBounds(source)
+      targets.slice(start, end).toArray
+
+  private def combineRows(
+      that: Relation[X, Y],
+      operation: Relation.RowOperation
+  ): Relation[X, Y] =
+    val offsets = Array.ofDim[Int](from.size + 1)
+    val output = Array.newBuilder[Int]
+    var outputSize = 0
+    var source = 0
+    while source < from.size do
+      val (leftStart, leftEnd) = rowBounds(source)
+      val (rightStart, rightEnd) = that.rowBounds(source)
+      val row =
+        Relation.mergeRows(
+          targets,
+          leftStart,
+          leftEnd,
+          that.targets,
+          rightStart,
+          rightEnd,
+          operation
+        )
+      output ++= row
+      outputSize += row.length
+      offsets(source + 1) = outputSize
+      source += 1
+    Relation.fromOwnedCsr(from, to, offsets, output.result())
+
+  private def checkedOperand[A, B](
+      that: Relation[A, B]
+  ): Either[SpaceMismatch, Relation[X, Y]] =
+    if !from.sameRuntimeOwnerAs(that.from) then Left(from.mismatch(that.from))
+    else if !to.sameRuntimeOwnerAs(that.to) then Left(to.mismatch(that.to))
+    else
+      Right(
+        new Relation(
+          from,
+          to,
+          that.rowOffsets,
+          that.targets,
+          that.emptyRepresentation
+        )
+      )
+
+  private def rowBounds(source: Int): (Int, Int) =
+    if emptyRepresentation then (0, 0)
+    else (rowOffsets(source), rowOffsets(source + 1))
 
   override def equals(other: Any): Boolean =
     other match
       case that: Relation[?, ?] =>
         from == that.from &&
         to == that.to &&
-        Relation.sameRows(rows, that.rows)
+        emptyRepresentation == that.emptyRepresentation &&
+        rowOffsets.sameElements(that.rowOffsets) &&
+        targets.sameElements(that.targets)
       case _ =>
         false
 
   override def hashCode(): Int =
-    var result = 31 * from.hashCode() + to.hashCode()
-    var source = 0
-    while source < rows.length do
-      var index = 0
-      while index < rows(source).length do
-        result = 31 * result + rows(source)(index)
-        index += 1
-      result = 31 * result + source
-      source += 1
-    result
+    targets.contentHash(
+      rowOffsets.contentHash(31 * from.hashCode() + to.hashCode())
+    )
 
   override def toString: String =
-    val pairCount =
-      rows.foldLeft(0)((total, row) => total + row.length)
     s"Relation(${from.name.value} -> ${to.name.value}, pairs=$pairCount)"
 
-  private def containsOrdinal(row: Array[Int], ordinal: Int): Boolean =
-    var low = 0
-    var high = row.length - 1
-    var found = false
-    while low <= high && !found do
-      val middle = low + (high - low) / 2
-      if row(middle) == ordinal then found = true
-      else if row(middle) < ordinal then low = middle + 1
-      else high = middle - 1
-    found
-
 object Relation:
+  final case class Csr(rowOffsets: Array[Int], targets: Array[Int])
+
+  private enum RowOperation:
+    case Union
+    case Intersection
+
   def empty[X, Y](
-      from: FiniteSpace[X],
-      to: FiniteSpace[Y]
+      from: FiniteDomain[X],
+      to: FiniteDomain[Y]
   ): Relation[X, Y] =
-    fromValidated(
+    new Relation(
       from,
       to,
-      Array.fill(from.size)(Array.emptyIntArray)
+      IntBuffer.empty,
+      IntBuffer.empty,
+      true
     )
 
-  def identity[S](space: FiniteSpace[S]): Relation[S, S] =
-    fromValidated(
-      space,
-      space,
-      Array.tabulate(space.size)(ordinal => Array(ordinal))
-    )
+  def identity[S](space: FiniteDomain[S]): Relation[S, S] =
+    if space.size == 0 then empty(space, space)
+    else
+      val offsets = Array.tabulate(space.size + 1)(ordinal => ordinal)
+      val targets = Array.tabulate(space.size)(ordinal => ordinal)
+      fromOwnedCsr(space, space, offsets, targets)
 
   def fromOrdinalRows[X, Y](
-      from: FiniteSpace[X],
-      to: FiniteSpace[Y],
+      from: FiniteDomain[X],
+      to: FiniteDomain[Y],
       inputRows: IterableOnce[IterableOnce[Int]]
   ): Either[RelationError, Relation[X, Y]] =
     val rows = inputRows.iterator.map(_.iterator.toArray).toArray
     if rows.length != from.size then
       Left(RelationError.WrongRowCount(from.size, rows.length))
     else
-      val canonical = Array.ofDim[Array[Int]](from.size)
+      val offsets = Array.ofDim[Int](from.size + 1)
+      val output = Array.newBuilder[Int]
+      var outputSize = 0
       var source = 0
       var error = Option.empty[RelationError]
       while source < rows.length && error.isEmpty do
@@ -212,124 +394,217 @@ object Relation:
         while position < input.length && error.isEmpty do
           val target = input(position)
           if !to.containsOrdinal(target) then
-            error =
-              Some(
-                RelationError.TargetOutOfBounds(
-                  source,
-                  position,
-                  target,
-                  to.size
-                )
+            error = Some(
+              RelationError.TargetOutOfBounds(
+                source,
+                position,
+                target,
+                to.size
               )
+            )
           position += 1
-        canonical(source) = input.sorted.distinct
+        val canonical = sortedDistinct(input)
+        output ++= canonical
+        outputSize += canonical.length
+        offsets(source + 1) = outputSize
         source += 1
 
       error match
-        case Some(value) =>
-          Left(value)
-        case None =>
-          Right(fromValidated(from, to, canonical))
+        case Some(value) => Left(value)
+        case None        =>
+          Right(fromOwnedCsr(from, to, offsets, output.result()))
+
+  def fromCsr[X, Y](
+      from: FiniteDomain[X],
+      to: FiniteDomain[Y],
+      inputOffsets: IterableOnce[Int],
+      inputTargets: IterableOnce[Int]
+  ): Either[RelationError, Relation[X, Y]] =
+    val offsets = inputOffsets.iterator.toArray
+    val targets = inputTargets.iterator.toArray
+    if targets.isEmpty && offsets.isEmpty then Right(empty(from, to))
+    else if from.size == Int.MaxValue then
+      Left(RelationError.RowOffsetCountOverflow(from.size))
+    else if offsets.length != from.size + 1 then
+      Left(
+        RelationError.WrongOffsetCount(
+          from.size + 1,
+          offsets.length
+        )
+      )
+    else if offsets.headOption.exists(_ != 0) then
+      Left(RelationError.FirstOffsetNotZero(offsets(0)))
+    else
+      var offsetPosition = 1
+      var error = Option.empty[RelationError]
+      while offsetPosition < offsets.length && error.isEmpty do
+        if offsets(offsetPosition) < offsets(offsetPosition - 1) then
+          error = Some(
+            RelationError.OffsetsNotMonotonic(
+              offsetPosition,
+              offsets(offsetPosition - 1),
+              offsets(offsetPosition)
+            )
+          )
+        offsetPosition += 1
+
+      if error.isEmpty && offsets.lastOption.exists(_ != targets.length) then
+        error = Some(
+          RelationError.FinalOffsetMismatch(
+            targets.length,
+            offsets.last
+          )
+        )
+
+      var source = 0
+      while source < from.size && error.isEmpty do
+        val start = offsets(source)
+        val end = offsets(source + 1)
+        var position = start
+        while position < end && error.isEmpty do
+          val target = targets(position)
+          if !to.containsOrdinal(target) then
+            error = Some(
+              RelationError.TargetOutOfBounds(
+                source,
+                position - start,
+                target,
+                to.size
+              )
+            )
+          else if position > start && targets(position - 1) >= target then
+            error = Some(
+              RelationError.RowNotStrictlyIncreasing(
+                source,
+                position - start,
+                targets(position - 1),
+                target
+              )
+            )
+          position += 1
+        source += 1
+
+      error match
+        case Some(value) => Left(value)
+        case None        =>
+          Right(fromOwnedCsr(from, to, offsets, targets))
 
   def tabulate[X, Y](
-      from: FiniteSpace[X],
-      to: FiniteSpace[Y]
-  )(row: Point[X] => Region[Y]): Either[SpaceMismatch, Relation[X, Y]] =
-    val rows = Array.ofDim[Array[Int]](from.size)
-    val points = from.points
-    var mismatch = Option.empty[SpaceMismatch]
-    while points.hasNext && mismatch.isEmpty do
-      val sourcePoint = points.next()
-      val source = sourcePoint.value
-      val region = row(sourcePoint)
-      if !to.sameRuntimeOwnerAs(region.space) then
-        mismatch = Some(to.mismatch(region.space))
-      else
-        rows(source) = region.ordinalsInDomainOrder
+      from: FiniteDomain[X],
+      to: FiniteDomain[Y]
+  )(row: Index[X] => Region[Y]): Relation[X, Y] =
+    val offsets = Array.ofDim[Int](from.size + 1)
+    val output = Array.newBuilder[Int]
+    var outputSize = 0
+    from.foreachIndex: source =>
+      val region = row(source)
+      region.foreachOrdinal: target =>
+        output += target
+        outputSize += 1
+      offsets(source.ordinal + 1) = outputSize
+    fromOwnedCsr(from, to, offsets, output.result())
 
-    mismatch match
-      case Some(value) =>
-        Left(value)
-      case None =>
-        Right(fromValidated(from, to, rows))
-
-  private def fromValidated[X, Y](
-      from: FiniteSpace[X],
-      to: FiniteSpace[Y],
-      rows: Array[Array[Int]]
+  private def fromOwnedCsr[X, Y](
+      from: FiniteDomain[X],
+      to: FiniteDomain[Y],
+      offsets: Array[Int],
+      targets: Array[Int]
   ): Relation[X, Y] =
-    new Relation(from, to, rows)
+    if targets.isEmpty then empty(from, to)
+    else
+      new Relation(
+        from,
+        to,
+        IntBuffer.fromOwnedArray(offsets),
+        IntBuffer.fromOwnedArray(targets),
+        false
+      )
 
-  private def ordinalsWhere(included: Array[Boolean]): Array[Int] =
-    val builder = Array.newBuilder[Int]
-    var ordinal = 0
-    while ordinal < included.length do
-      if included(ordinal) then builder += ordinal
-      ordinal += 1
-    builder.result()
+  private def binarySearch(
+      values: IntBuffer,
+      start: Int,
+      end: Int,
+      ordinal: Int
+  ): Boolean =
+    var low = start
+    var high = end - 1
+    var found = false
+    while low <= high && !found do
+      val middle = low + (high - low) / 2
+      val candidate = values(middle)
+      if candidate == ordinal then found = true
+      else if candidate < ordinal then low = middle + 1
+      else high = middle - 1
+    found
 
-  private def mergeUnion(
-      left: Array[Int],
-      right: Array[Int]
-  ): Array[Int] =
-    val result = Array.ofDim[Int](left.length + right.length)
-    var leftIndex = 0
-    var rightIndex = 0
-    var out = 0
-    while leftIndex < left.length && rightIndex < right.length do
-      if left(leftIndex) < right(rightIndex) then
-        result(out) = left(leftIndex)
-        leftIndex += 1
-      else if right(rightIndex) < left(leftIndex) then
-        result(out) = right(rightIndex)
-        rightIndex += 1
-      else
-        result(out) = left(leftIndex)
-        leftIndex += 1
-        rightIndex += 1
-      out += 1
-    while leftIndex < left.length do
-      result(out) = left(leftIndex)
-      leftIndex += 1
-      out += 1
-    while rightIndex < right.length do
-      result(out) = right(rightIndex)
-      rightIndex += 1
-      out += 1
-    result.take(out)
+  private def sortedDistinct(input: Array[Int]): Array[Int] =
+    if input.isEmpty then input
+    else
+      val sorted = input.sorted
+      val unique = Array.ofDim[Int](sorted.length)
+      unique(0) = sorted(0)
+      var in = 1
+      var out = 1
+      while in < sorted.length do
+        if sorted(in) != unique(out - 1) then
+          unique(out) = sorted(in)
+          out += 1
+        in += 1
+      unique.take(out)
 
   private def sortedSubset(
-      left: Array[Int],
-      right: Array[Int]
+      left: IntBuffer,
+      leftStart: Int,
+      leftEnd: Int,
+      right: IntBuffer,
+      rightStart: Int,
+      rightEnd: Int
   ): Boolean =
-    var leftIndex = 0
-    var rightIndex = 0
+    var leftPosition = leftStart
+    var rightPosition = rightStart
     var subset = true
-    while leftIndex < left.length && subset do
-      while rightIndex < right.length && right(rightIndex) < left(leftIndex) do
-        rightIndex += 1
-      if rightIndex >= right.length || right(rightIndex) != left(leftIndex) then
-        subset = false
-      leftIndex += 1
+    while leftPosition < leftEnd && subset do
+      while rightPosition < rightEnd &&
+        right(rightPosition) < left(leftPosition)
+      do rightPosition += 1
+      if rightPosition >= rightEnd ||
+        right(rightPosition) != left(leftPosition)
+      then subset = false
+      leftPosition += 1
     subset
 
-  private def sameRows(
-      left: Array[Array[Int]],
-      right: Array[Array[Int]]
-  ): Boolean =
-    if left.length != right.length then false
-    else
-      var source = 0
-      var same = true
-      while source < left.length && same do
-        val leftRow = left(source)
-        val rightRow = right(source)
-        if leftRow.length != rightRow.length then
-          same = false
-        else
-          var index = 0
-          while index < leftRow.length && same do
-            same = leftRow(index) == rightRow(index)
-            index += 1
-        source += 1
-      same
+  private def mergeRows(
+      left: IntBuffer,
+      leftStart: Int,
+      leftEnd: Int,
+      right: IntBuffer,
+      rightStart: Int,
+      rightEnd: Int,
+      operation: RowOperation
+  ): Array[Int] =
+    val builder = Array.newBuilder[Int]
+    var leftPosition = leftStart
+    var rightPosition = rightStart
+    while leftPosition < leftEnd && rightPosition < rightEnd do
+      val leftValue = left(leftPosition)
+      val rightValue = right(rightPosition)
+      if leftValue < rightValue then
+        if operation == RowOperation.Union then builder += leftValue
+        leftPosition += 1
+      else if rightValue < leftValue then
+        if operation == RowOperation.Union then builder += rightValue
+        rightPosition += 1
+      else
+        builder += leftValue
+        leftPosition += 1
+        rightPosition += 1
+
+    if operation == RowOperation.Union then
+      while leftPosition < leftEnd do
+        builder += left(leftPosition)
+        leftPosition += 1
+      while rightPosition < rightEnd do
+        builder += right(rightPosition)
+        rightPosition += 1
+
+    builder.result()

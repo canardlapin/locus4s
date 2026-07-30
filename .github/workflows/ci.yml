@@ -7,7 +7,7 @@ on:
       - main
 
 jobs:
-  test:
+  format-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,4 +17,16 @@ jobs:
           java-version: "21"
           cache: sbt
       - uses: sbt/setup-sbt@v1
-      - run: sbt -J-Xmx4G compileAll testAll
+      - run: sbt -J-Xmx4G checkAll
+
+  scalajs-fullopt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      - run: sbt -J-Xmx4G testFullOptJS

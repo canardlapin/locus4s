@@ -2,150 +2,174 @@ package locus4s.data
 
 import locus4s.DomainRecord
 import locus4s.DomainRegistry
+import locus4s.DomainResolution
+import locus4s.Index
 import locus4s.Region
 import locus4s.Selection
+import locus4s.TotalMap
 import munit.FunSuite
 import scala.collection.mutable.ArrayBuffer
 
 final class IndexedFieldSuite extends FunSuite:
   private val resolution =
-    restored("field-domain", "field", 6)
+    restored("field-domain", 6)
   private val space =
     resolution.space
   private val field =
     mustRight(
-      IndexedField.fromValues(
+      VectorField.fromValues(
         space,
         Vector(0, 10, 20, 30, 40, 50)
       )
     )
 
-  test("construction validates size and owns caller-provided storage"):
+  test("VectorField owns input storage and lookup is total"):
     val input = ArrayBuffer(1, 2, 3, 4, 5, 6)
-    val owned = mustRight(IndexedField.fromValues(space, input))
+    val owned = mustRight(VectorField.fromValues(space, input))
     input(0) = 99
 
+    assertEquals(owned(mustRight(space.index(0))), 1)
     assertEquals(
-      mustRight(owned.at(mustRight(space.point(0)))),
-      1
-    )
-    assertEquals(
-      IndexedField.fromValues(space, Vector(1, 2)),
-      Left(IndexedFieldError.WrongValueCount(6, 2))
+      VectorField.fromValues(space, Vector(1, 2)),
+      Left(FieldConstructionError.WrongValueCount(6, 2))
     )
 
-  test("tabulate is strict and evaluates each domain point exactly once"):
+  test("Field supports arbitrary storage without copying through Vector"):
+    final class FormulaField extends Field[resolution.S, Int]:
+      val space = resolution.space
+
+      def apply(index: Index[resolution.S]): Int =
+        index.ordinal * index.ordinal
+
+    val formula = new FormulaField
+
+    assertEquals(
+      formula.valuesInDomainOrder.toVector,
+      Vector(0, 1, 4, 9, 16, 25)
+    )
+
+  test("map and Section map are O(1) views"):
     var evaluations = 0
-    val tabulated =
-      IndexedField.tabulate(space): point =>
+    val mapped =
+      field.map: value =>
         evaluations += 1
-        point.value * 2
-
-    assertEquals(evaluations, space.size)
-    assertEquals(
-      tabulated.valuesInDomainOrder.toVector,
-      Vector(0, 2, 4, 6, 8, 10)
-    )
-    assertEquals(evaluations, space.size)
-
-  test("restriction identity, nesting, and map naturality hold"):
-    val whole = Region.whole(space)
-    val first =
-      mustRight(Region.fromOrdinals(space, Vector(0, 1, 3, 5)))
-    val second =
-      mustRight(Region.fromOrdinals(space, Vector(1, 2, 3)))
-
-    assertEquals(
-      mustRight(field.restrict(whole)).valuesInDomainOrder.toVector,
-      field.valuesInDomainOrder.toVector
-    )
-    assertEquals(
-      mustRight(mustRight(field.restrict(first)).restrict(second)).support,
-      mustRight(first.intersect(second))
-    )
-    assertEquals(
-      mustRight(field.map(_ + 1).restrict(first))
-        .valuesInDomainOrder
-        .toVector,
-      mustRight(field.restrict(first))
-        .map(_ + 1)
-        .valuesInDomainOrder
-        .toVector
-    )
-
-  test("section lookup and selection preserve support and explicit order"):
+        value + 1
     val support =
       mustRight(Region.fromOrdinals(space, Vector(1, 3, 5)))
-    val section = mustRight(field.restrict(support))
+    val section = field.restrict(support)
+    val mappedSection =
+      section.map: value =>
+        evaluations += 1
+        value * 2
+
+    assertEquals(evaluations, 0)
+    assertEquals(mapped(mustRight(space.index(2))), 21)
+    assertEquals(evaluations, 1)
+    assertEquals(
+      mappedSection(mustRight(space.index(3))),
+      Right(60)
+    )
+    assertEquals(evaluations, 2)
+
+  test("field pullback obeys identity and composition"):
+    val first =
+      mustRight(
+        TotalMap.fromTargetOrdinals(
+          space,
+          space,
+          Vector(1, 2, 3, 4, 5, 0)
+        )
+      )
+    val second =
+      mustRight(
+        TotalMap.fromTargetOrdinals(
+          space,
+          space,
+          Vector(5, 4, 3, 2, 1, 0)
+        )
+      )
+
+    assertEquals(
+      field.pullback(TotalMap.identity(space)).toVector,
+      field.toVector
+    )
+    assertEquals(
+      field.pullback(second).pullback(first).toVector,
+      field.pullback(first.andThen(second)).toVector
+    )
+
+  test("selection gather retains an owned compact position domain"):
     val selection =
       mustRight(Selection.fromOrdinals(space, Vector(5, 1, 3)))
+    val gathered = field.gather(selection)
 
-    assertEquals(
-      section.at(mustRight(space.point(1))),
-      Right(10)
-    )
-    assertEquals(
-      section.at(mustRight(space.point(2))),
-      Left(SectionLookupError.OutsideSupport(2))
-    )
-    assertEquals(
-      section.valuesIn(selection),
-      Right(Vector(50, 10, 30))
-    )
+    assert(gathered.space.sameRuntimeOwnerAs(selection.positions))
+    assertEquals(gathered.toVector, Vector(50, 10, 30))
+    selection.positions.indices.foreach: position =>
+      assertEquals(
+        gathered(position),
+        field(selection(position))
+      )
 
+  test("Section gather checks support and returns a position-domain Field"):
+    val support =
+      mustRight(Region.fromOrdinals(space, Vector(1, 3, 5)))
+    val section = field.restrict(support)
+    val selection =
+      mustRight(Selection.fromOrdinals(space, Vector(5, 1, 3)))
+    val gathered = mustRight(section.gather(selection))
+
+    assertEquals(gathered.toVector, Vector(50, 10, 30))
     val outside =
       mustRight(Selection.fromOrdinals(space, Vector(1, 2)))
     assertEquals(
-      section.valuesIn(outside),
+      section.gather(outside),
       Left(SectionSelectionError.OutsideSupport(2))
     )
 
-  test("runtime-domain mismatch is explicit even when records agree"):
+  test("alignment transports VectorField by sharing immutable storage"):
     val record =
-      mustRight(DomainRecord.parse("shared-field", "shared", 3))
+      mustRight(DomainRecord.parse("shared-field", "left", 3))
+    val renamed =
+      mustRight(DomainRecord.parse("shared-field", "right", 3))
     val left =
       mustRight(DomainRegistry.empty.restore(record))
     val right =
-      mustRight(DomainRegistry.empty.restore(record))
+      mustRight(DomainRegistry.empty.restore(renamed))
     val leftField =
-      mustRight(IndexedField.fromValues(left.space, Vector(2, 4, 6)))
-    val rightWhole = Region.whole(right.space)
-
-    leftField.restrict(rightWhole) match
-      case Left(error) =>
-        assert(error.persistentIdentityMatches)
-        assertEquals(error.expected, record)
-        assertEquals(error.actual, record)
-      case Right(_) =>
-        fail("distinct live owners must require explicit alignment")
-
+      mustRight(VectorField.fromValues(left.space, Vector(2, 4, 6)))
     val alignment = mustRight(left.space.align(right.space))
-    val rebound = mustRight(leftField.rebind(alignment))
-    val reboundSection = mustRight(rebound.restrict(rightWhole))
+    val rebound = leftField.rebind(alignment)
+
+    assert(rebound.toVector eq leftField.toVector)
+    assertEquals(rebound.toVector, Vector(2, 4, 6))
     assertEquals(
-      reboundSection.valuesInDomainOrder.toVector,
+      alignment.transport(leftField).toVector,
       Vector(2, 4, 6)
     )
-    assert(rebound.toVector eq leftField.toVector)
 
-  test("zipWith checks live domain ownership before combining"):
-    val other =
-      restored("other-field-domain", "other", space.size)
-    val wrong =
-      IndexedField.tabulate(other.space)(point => point.value)
+  test("checked field operations reject a different live owner"):
+    val record =
+      mustRight(DomainRecord.parse("checked-field", "left", 3))
+    val renamed =
+      mustRight(DomainRecord.parse("checked-field", "right", 3))
+    val left =
+      mustRight(DomainRegistry.empty.restore(record))
+    val right =
+      mustRight(DomainRegistry.empty.restore(renamed))
+    val first =
+      mustRight(VectorField.fromValues(left.space, Vector(1, 2, 3)))
+    val second =
+      mustRight(VectorField.fromValues(right.space, Vector(4, 5, 6)))
 
-    assert(field.zipWith(wrong)(_ + _).isLeft)
-    assertEquals(
-      mustRight(field.zipWith(field)(_ + _)).toVector,
-      Vector(0, 20, 40, 60, 80, 100)
-    )
+    first.zipWithChecked(second)(_ + _) match
+      case Left(error) =>
+        assert(error.persistentIdentityMatches)
+      case Right(_) =>
+        fail("checked zip must require one live owner")
 
-  private def restored(
-      id: String,
-      name: String,
-      size: Int
-  ) =
-    val record = mustRight(DomainRecord.parse(id, name, size))
+  private def restored(id: String, size: Int): DomainResolution =
+    val record = mustRight(DomainRecord.parse(id, id, size))
     mustRight(DomainRegistry.empty.restore(record))
 
   private def mustRight[E, A](value: Either[E, A]): A =

@@ -5,199 +5,280 @@ import org.scalacheck.Gen
 import org.scalacheck.Prop.forAll
 
 final class LocusCorePropertiesSuite extends ScalaCheckSuite:
-  private val domainResolution =
-    mustRight(
-      mustRight(DomainRegistry.withSequentialIds("properties"))
-        .fresh("property-domain", 12)
-    )
-  private val space = domainResolution.space
-
-  property("region construction is sorted, duplicate-free, and bounded"):
-    forAll(Gen.listOf(Gen.choose(-36, 36))): input =>
-      val bounded = input.map(value => Math.floorMod(value, space.size))
-      val region = mustRight(Region.fromOrdinals(space, bounded))
-      val expected = bounded.distinct.sorted
-      assertEquals(region.ordinalsInDomainOrder.toSeq, expected)
-      assertEquals(region.cardinality, expected.size)
-      assert(region.pointsInDomainOrder.forall(space.contains))
-
-  property("region union, intersection, difference, and complement obey set laws"):
-    forAll(
-      Gen.listOf(Gen.choose(0, space.size - 1)),
-      Gen.listOf(Gen.choose(0, space.size - 1))
-    ): (leftInput, rightInput) =>
+  property("Region is a Boolean algebra and matches immutable Set"):
+    forAll(regionCase): (size, leftInput, middleInput, rightInput) =>
+      val space = restored(s"region-$size", size).space
       val left = mustRight(Region.fromOrdinals(space, leftInput))
+      val middle = mustRight(Region.fromOrdinals(space, middleInput))
       val right = mustRight(Region.fromOrdinals(space, rightInput))
-      val union = mustRight(left.union(right))
-      val reverseUnion = mustRight(right.union(left))
-      val intersection = mustRight(left.intersect(right))
-      val difference = mustRight(left.diff(right))
+      val empty = Region.empty(space)
+      val whole = Region.whole(space)
+      val universe = (0 until size).toSet
+      val leftSet = leftInput.toSet
+      val middleSet = middleInput.toSet
 
-      assertEquals(union, reverseUnion)
       assertEquals(
-        union.ordinalsInDomainOrder.toSet,
-        leftInput.toSet union rightInput.toSet
+        left.union(middle).ordinalsInDomainOrder.toSet,
+        leftSet union middleSet
       )
       assertEquals(
-        intersection.ordinalsInDomainOrder.toSet,
-        leftInput.toSet intersect rightInput.toSet
+        left.intersect(middle).ordinalsInDomainOrder.toSet,
+        leftSet intersect middleSet
       )
       assertEquals(
-        difference.ordinalsInDomainOrder.toSet,
-        leftInput.toSet diff rightInput.toSet
+        left.diff(middle).ordinalsInDomainOrder.toSet,
+        leftSet diff middleSet
+      )
+      assertEquals(left.complement.ordinalsInDomainOrder.toSet, universe diff leftSet)
+      assertEquals(left.union(middle), middle.union(left))
+      assertEquals(left.intersect(middle), middle.intersect(left))
+      assertEquals(left.union(middle).union(right), left.union(middle.union(right)))
+      assertEquals(
+        left.intersect(middle).intersect(right),
+        left.intersect(middle.intersect(right))
       )
       assertEquals(
-        mustRight(left.union(left.complement)),
-        Region.whole(space)
+        left.intersect(middle.union(right)),
+        left.intersect(middle).union(left.intersect(right))
+      )
+      assertEquals(left.union(empty), left)
+      assertEquals(left.intersect(whole), left)
+      assertEquals(left.union(whole), whole)
+      assertEquals(left.intersect(empty), empty)
+      assertEquals(left.complement.complement, left)
+      assertEquals(left.union(left.complement), whole)
+      assertEquals(left.intersect(left.complement), empty)
+      assertEquals(
+        left.union(middle).complement,
+        left.complement.intersect(middle.complement)
       )
       assertEquals(
-        mustRight(left.intersect(left.complement)),
-        Region.empty(space)
+        left.xor(middle),
+        left.diff(middle).union(middle.diff(left))
+      )
+      assert(left.subsetOf(left))
+
+  property("TotalMap forms a category and satisfies image-pullback laws"):
+    forAll(totalMapCase):
+      (size, firstTargets, secondTargets, thirdTargets, sourceInput, targetInput) =>
+        val space = restored(s"map-$size", size).space
+        val first =
+          mustRight(TotalMap.fromTargetOrdinals(space, space, firstTargets))
+        val second =
+          mustRight(TotalMap.fromTargetOrdinals(space, space, secondTargets))
+        val third =
+          mustRight(TotalMap.fromTargetOrdinals(space, space, thirdTargets))
+        val source = mustRight(Region.fromOrdinals(space, sourceInput))
+        val target = mustRight(Region.fromOrdinals(space, targetInput))
+
+        assertEquals(
+          TotalMap.identity(space).andThen(first),
+          first
+        )
+        assertEquals(first.andThen(TotalMap.identity(space)), first)
+        assertEquals(
+          first.andThen(second).andThen(third),
+          first.andThen(second.andThen(third))
+        )
+        assertEquals(
+          first.pullback(target.complement),
+          first.pullback(target).complement
+        )
+        assertEquals(
+          first.image(source).subsetOf(target),
+          source.subsetOf(first.pullback(target))
+        )
+
+  property("Relation CSR operations match a reference relation model"):
+    forAll(relationCase): (size, firstRows, secondRows, thirdRows, sourceInput) =>
+      val space = restored(s"relation-$size", size).space
+      val first =
+        mustRight(Relation.fromOrdinalRows(space, space, firstRows))
+      val second =
+        mustRight(Relation.fromOrdinalRows(space, space, secondRows))
+      val third =
+        mustRight(Relation.fromOrdinalRows(space, space, thirdRows))
+      val region = mustRight(Region.fromOrdinals(space, sourceInput))
+      val firstModel = canonicalRows(firstRows)
+      val secondModel = canonicalRows(secondRows)
+
+      assertEquals(
+        first.ordinalRows.map(_.toVector).toVector,
+        firstModel
+      )
+      assertEquals(
+        first.andThen(second).ordinalRows.map(_.toVector).toVector,
+        compose(firstModel, secondModel)
+      )
+      assertEquals(first.converse.converse, first)
+      assertEquals(
+        first.andThen(second).andThen(third),
+        first.andThen(second.andThen(third))
+      )
+      assertEquals(Relation.identity(space).andThen(first), first)
+      assertEquals(first.andThen(Relation.identity(space)), first)
+      assertEquals(
+        first.union(second).ordinalRows.map(_.toSet).toVector,
+        firstModel.zip(secondModel).map((left, right) => left.toSet union right.toSet)
+      )
+      assertEquals(
+        first.intersect(second).ordinalRows.map(_.toSet).toVector,
+        firstModel
+          .zip(secondModel)
+          .map((left, right) => left.toSet intersect right.toSet)
+      )
+      assertEquals(
+        first.andThen(second).image(region),
+        second.image(first.image(region))
       )
 
-  property("selection preserves order while enforcing uniqueness"):
-    forAll(Gen.someOf((0 until space.size).toList)): input =>
-      val selection = mustRight(Selection.fromOrdinals(space, input))
-      assertEquals(selection.ordinals.toSeq, input)
-      assertEquals(selection.region.ordinalsInDomainOrder.toSeq, input.sorted)
-      assertEquals(selection.get(-1), None)
-      assertEquals(selection.get(selection.size), None)
+  property("Selection is an injection with an owned position domain"):
+    forAll(selectionCase): (size, ordinals) =>
+      val space = restored(s"selection-$size", size).space
+      val selection =
+        mustRight(Selection.fromOrdinals(space, ordinals))
 
-  test("selection rejects duplicate and out-of-bounds ordinals"):
+      assertEquals(selection.ordinals.toVector, ordinals)
+      assertEquals(selection.size, ordinals.size)
+      assert(selection.positions.size == ordinals.size)
+      assert(!selection.positions.isPersistable)
+      assertEquals(
+        selection.support,
+        selection.embedding.toTotalMap.image(
+          Region.whole(selection.positions)
+        )
+      )
+      selection.positions.indices.foreach: position =>
+        assertEquals(
+          selection(position).ordinal,
+          ordinals(position.ordinal)
+        )
+
+  test("empty and whole Region use canonical edge semantics"):
+    val emptySpace = restored("empty", 0).space
+    val singleton = restored("singleton", 1).space
+
+    assert(Region.empty(emptySpace).isEmpty)
+    assert(Region.whole(emptySpace).isEmpty)
+    assert(Region.whole(singleton).isWhole)
     assertEquals(
-      Selection.fromOrdinals(space, List(1, 2, 1)),
+      Region.whole(singleton).complement,
+      Region.empty(singleton)
+    )
+
+  test("validated fast constructors reject malformed structures"):
+    val space = restored("malformed", 4).space
+    assertEquals(
+      Region.fromSortedDistinct(space, Vector(0, 2, 2)),
+      Left(RegionError.NotStrictlyIncreasing(2, 2, 2))
+    )
+    assertEquals(
+      TotalMap.fromTargetOrdinals(space, space, Vector(0, 1)),
+      Left(TotalMapError.WrongTargetCount(4, 2))
+    )
+    assertEquals(
+      Selection.fromOrdinals(space, Vector(1, 2, 1)),
       Left(SelectionError.DuplicateOrdinal(1))
     )
     assertEquals(
-      Selection.fromOrdinals(space, List(1, space.size)),
-      Left(SelectionError.OutOfBounds(1, space.size, space.size))
-    )
-
-  property("total maps are total and compose extensionally"):
-    forAll(
-      Gen.listOfN(space.size, Gen.choose(0, space.size - 1)),
-      Gen.listOfN(space.size, Gen.choose(0, space.size - 1))
-    ): (firstTargets, secondTargets) =>
-      val first =
-        mustRight(TotalMap.fromTargetOrdinals(space, space, firstTargets))
-      val second =
-        mustRight(TotalMap.fromTargetOrdinals(space, space, secondTargets))
-      val composed = mustRight(first.andThen(second))
-
-      space.points.foreach: point =>
-        val firstResult = mustRight(first.at(point))
-        val expected = mustRight(second.at(firstResult))
-        assertEquals(mustRight(composed.at(point)), expected)
-
-      assertEquals(
-        mustRight(TotalMap.identity(space).andThen(first)),
-        first
-      )
-      assertEquals(
-        mustRight(first.andThen(TotalMap.identity(space))),
-        first
-      )
-
-  test("total map validates target count and bounds and owns its input"):
-    val wrongCount =
-      TotalMap.fromTargetOrdinals(space, space, List.fill(space.size - 1)(0))
-    assertEquals(
-      wrongCount,
-      Left(TotalMapError.WrongTargetCount(space.size, space.size - 1))
-    )
-
-    val outOfBounds = Vector.fill(space.size)(0).updated(3, space.size)
-    assertEquals(
-      TotalMap.fromTargetOrdinals(space, space, outOfBounds),
-      Left(TotalMapError.TargetOutOfBounds(3, space.size, space.size))
-    )
-
-    val mutableTargets = Array.tabulate(space.size)(identity)
-    val mapping =
-      mustRight(TotalMap.fromTargetOrdinals(space, space, mutableTargets))
-    mutableTargets(0) = space.size - 1
-    assertEquals(mustRight(mapping.at(mustRight(space.point(0)))).value, 0)
-
-  property("relation rows are canonical and converse is involutive"):
-    val rowGen =
-      Gen.listOfN(
-        space.size,
-        Gen.listOf(Gen.choose(0, space.size - 1))
-      )
-    forAll(rowGen): rows =>
-      val relation =
-        mustRight(Relation.fromOrdinalRows(space, space, rows))
-      relation.ordinalRows.zip(rows).foreach: (actual, input) =>
-        assertEquals(actual.toSeq, input.distinct.sorted)
-      assertEquals(relation.converse.converse, relation)
-      assertEquals(
-        mustRight(Relation.identity(space).andThen(relation)),
-        relation
-      )
-      assertEquals(
-        mustRight(relation.andThen(Relation.identity(space))),
-        relation
-      )
-
-  test("relation validates shape, bounds, and defensively copies rows"):
-    assertEquals(
-      Relation.fromOrdinalRows(
+      Relation.fromCsr(
         space,
         space,
-        List.fill(space.size - 1)(List.empty[Int])
+        Vector(0, 1, 1, 1, 1),
+        Vector(4)
       ),
-      Left(RelationError.WrongRowCount(space.size, space.size - 1))
+      Left(RelationError.TargetOutOfBounds(0, 0, 4, 4))
     )
-
-    val invalidRows =
-      Vector.fill(space.size)(Vector.empty[Int]).updated(2, Vector(space.size))
     assertEquals(
-      Relation.fromOrdinalRows(space, space, invalidRows),
-      Left(RelationError.TargetOutOfBounds(2, 0, space.size, space.size))
+      Relation.fromCsr(
+        space,
+        space,
+        Vector(0, 2, 2, 2, 2),
+        Vector(2, 1)
+      ),
+      Left(RelationError.RowNotStrictlyIncreasing(0, 1, 2, 1))
     )
 
-    val mutableRow = Array(1, 2)
-    val mutableRows =
-      Array.tabulate(space.size): source =>
-        if source == 0 then mutableRow else Array.emptyIntArray
-    val relation =
-      mustRight(
-        Relation.fromOrdinalRows(
-          space,
-          space,
-          mutableRows.map(_.toIndexedSeq).toIndexedSeq
+  private val regionCase =
+    for
+      size <- Gen.choose(0, 20)
+      left <- boundedList(size)
+      middle <- boundedList(size)
+      right <- boundedList(size)
+    yield (size, left, middle, right)
+
+  private val totalMapCase =
+    for
+      size <- Gen.choose(0, 16)
+      first <- targets(size)
+      second <- targets(size)
+      third <- targets(size)
+      source <- boundedList(size)
+      target <- boundedList(size)
+    yield (size, first, second, third, source, target)
+
+  private val relationCase =
+    for
+      size <- Gen.choose(0, 12)
+      first <- rows(size)
+      second <- rows(size)
+      third <- rows(size)
+      source <- boundedList(size)
+    yield (size, first, second, third, source)
+
+  private val selectionCase =
+    Gen
+      .choose(0, 24)
+      .flatMap: size =>
+        Gen
+          .choose(0, size)
+          .flatMap: selected =>
+            Gen
+              .pick(selected, (0 until size).toVector)
+              .map(values => (size, values.toVector))
+
+  private def boundedList(size: Int): Gen[Vector[Int]] =
+    if size == 0 then Gen.const(Vector.empty)
+    else
+      Gen
+        .listOf(Gen.choose(0, size - 1))
+        .map(_.toVector)
+
+  private def targets(size: Int): Gen[Vector[Int]] =
+    if size == 0 then Gen.const(Vector.empty)
+    else
+      Gen
+        .listOfN(size, Gen.choose(0, size - 1))
+        .map(_.toVector)
+
+  private def rows(size: Int): Gen[Vector[Vector[Int]]] =
+    if size == 0 then Gen.const(Vector.empty)
+    else
+      Gen
+        .listOfN(
+          size,
+          Gen
+            .listOf(Gen.choose(0, size - 1))
+            .map(_.toVector)
         )
-      )
-    mutableRow(0) = 8
-    assertEquals(relation.ordinalRows(0).toSeq, Seq(1, 2))
+        .map(_.toVector)
 
-  test("map and relation images agree for functional relations"):
-    val targets = Vector.tabulate(space.size)(index => (index * 3) % space.size)
-    val mapping =
-      mustRight(TotalMap.fromTargetOrdinals(space, space, targets))
-    val relation =
-      mustRight(
-        Relation.fromOrdinalRows(
-          space,
-          space,
-          targets.map(target => Vector(target))
-        )
-      )
-    val region =
-      mustRight(Region.fromOrdinals(space, Vector(1, 3, 7, 9)))
+  private def canonicalRows(
+      rows: Vector[Vector[Int]]
+  ): Vector[Vector[Int]] =
+    rows.map(_.distinct.sorted)
 
-    assertEquals(
-      mustRight(mapping.image(region)),
-      mustRight(relation.image(region))
-    )
-    assertEquals(
-      mustRight(mapping.pullback(mustRight(mapping.image(region)))),
-      mustRight(relation.converse.image(mustRight(relation.image(region))))
-    )
+  private def compose(
+      first: Vector[Vector[Int]],
+      second: Vector[Vector[Int]]
+  ): Vector[Vector[Int]] =
+    first.map(row => row.flatMap(second).distinct.sorted)
+
+  private def restored(id: String, size: Int): DomainResolution =
+    val record = mustRight(DomainRecord.parse(id, id, size))
+    mustRight(DomainRegistry.empty.restore(record))
 
   private def mustRight[E, A](value: Either[E, A]): A =
     value match
-      case Right(result) =>
-        result
-      case Left(error) =>
-        fail(s"expected Right, found Left($error)")
+      case Right(result) => result
+      case Left(error)   => fail(s"expected Right, found Left($error)")

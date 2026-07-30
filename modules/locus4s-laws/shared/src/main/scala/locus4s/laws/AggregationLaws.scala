@@ -1,20 +1,19 @@
 package locus4s.laws
 
-import locus4s.SpaceMismatch
 import locus4s.TotalMap
 import locus4s.data.Aggregation
-import locus4s.data.IndexedField
+import locus4s.data.Field
 
 object AggregationLaws:
-  /** Checks direct versus staged aggregation through two total maps.
+  /** Direct versus staged pushforward through two total maps.
     *
-    * This is a law only when `empty` and `combine` form a lawful commutative
-    * monoid and `contribution` is pure.
+    * This law requires `empty` and `combine` to form a commutative monoid and
+    * `contribution` to be pure.
     */
-  def totalMapFusion[X, FX, Y, Z, A, M](
+  def totalMapFusion[X, Y, Z, A, M](
       first: TotalMap[X, Y],
       second: TotalMap[Y, Z],
-      field: IndexedField[FX, A]
+      field: Field[X, A]
   )(
       empty: => M
   )(
@@ -23,21 +22,15 @@ object AggregationLaws:
       combine: (M, M) => M
   )(
       equal: (M, M) => Boolean
-  ): Either[SpaceMismatch, Boolean] =
-    for
-      directGrouping <- first.andThen(second)
-      direct <-
-        Aggregation.foldMapBy(directGrouping, field)(empty)(
-          contribution
-        )(combine)
-      intermediate <-
-        Aggregation.foldMapBy(first, field)(empty)(contribution)(
-          combine
-        )
-      staged <-
-        Aggregation.foldMapBy(second, intermediate)(empty)(identity)(
-          combine
-        )
-    yield direct.toVector
-      .zip(staged.toVector)
-      .forall((left, right) => equal(left, right))
+  ): Boolean =
+    val direct =
+      Aggregation.foldMapBy(first.andThen(second), field)(empty)(
+        contribution
+      )(combine)
+    val intermediate =
+      Aggregation.foldMapBy(first, field)(empty)(contribution)(combine)
+    val staged =
+      Aggregation.foldMapBy(second, intermediate)(empty)(identity)(
+        combine
+      )
+    direct.space.indices.forall(index => equal(direct(index), staged(index)))
