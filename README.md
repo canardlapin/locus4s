@@ -4,11 +4,46 @@
 
 Identity-safe finite domains for Scala 3 on the JVM and Scala.js.
 
-A point is not merely an integer. It is a bounded ordinal owned by one finite
-domain. locus4s makes that ownership explicit, distinguishes live owners from
-persistent identity, and supplies the small algebra needed to move regions,
-selections, maps, relations, and fields without exchanging naked indices.
+## Why locus4s?
 
+Scientific programs often have several integer-indexed collections in memory at
+once: voxels in a full image, voxels in a mask, surface vertices, parcels, graph
+nodes, or rows in a compact matrix. All of them may use `Int` for storage, but
+the integers do not mean the same thing. If voxel `42` is accidentally used as
+surface vertex `42`, ordinary bounds checking may succeed and return a
+plausible—but wrong—value.
+
+locus4s associates each index with the finite domain that owns it. A raw integer
+is checked when it enters a domain. After that, Scala tracks the relationship
+between the index and the regions, maps, and data that use it. Operations within
+one domain are total. If the same persisted domain is loaded independently,
+explicit alignment reconnects the two live owners.
+
+This is useful when a library needs to:
+
+- prevent indices from different grids, masks, meshes, or tables from being
+  mixed accidentally;
+- retain the relationship between compact selected data and its source domain;
+- describe reindexing, grouping, partial assignment, or sparse neighborhoods;
+  or
+- restore persisted data in another process without pretending that the new
+  in-memory owner is the original object.
+
+## What does it provide?
+
+- `FiniteDomain[S]` establishes a finite owner and its size.
+- `Index[S]` is a bounded ordinal belonging to that owner.
+- `Region[S]` represents an unordered subset, while `Selection[S]` gives an
+  ordered subset its own compact position domain.
+- Total, partial, injective, surjective, and bijective maps describe structured
+  relationships between domains. `Relation` represents sparse many-to-many
+  relationships.
+- `Field[S, A]` associates a value with every index and supports gathering,
+  pullback, views, and deterministic aggregation.
+- `DomainRecord`, `DomainRegistry`, and `DomainAlignment` separate persisted
+  identity from the particular live owner reconstructed by one program.
+
+locus4s supplies these identity and indexing rules, not an imaging data model.
 Geometry, coordinates, image formats, interpolation, neighborhood policy, and
 numerical arrays remain downstream.
 
@@ -27,10 +62,14 @@ val result =
     val signal =
       VectorField.tabulate(restored.space)(_.ordinal * 10.0)
     signal(vertex)
+
+// result: Right(30.0)
 ```
 
 Raw ordinals are checked when they enter a domain. Once `vertex` and `signal`
-share the same owner type, lookup is total.
+share the same owner type, lookup is total. Invalid names, negative sizes,
+out-of-bounds ordinals, and conflicting persisted identities are reported by
+the constructors as `Left` values.
 
 The executable [Scala guide](docs/README.md) continues with installation,
 ownership and alignment, regions and selections, maps and relations, fields and
