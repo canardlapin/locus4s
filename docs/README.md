@@ -15,10 +15,11 @@ The library keeps three ideas separate:
 Geometry, coordinates, image formats, interpolation, neighborhood policy, and
 numerical arrays remain downstream.
 
-## A first typed lookup
+## The mistake locus4s prevents
 
-Applications supply persistent IDs; the immutable registry only canonicalizes
-them.
+Two collections can have the same size while their ordinals mean different
+things. Bounds checking cannot catch an index taken from the wrong collection.
+This example creates two process-local domains:
 
 ```scala mdoc:silent
 import locus4s.*
@@ -27,29 +28,33 @@ import locus4s.data.*
 def expectRight[E, A](result: Either[E, A]): A =
   result match
     case Right(value) => value
-    case Left(error)  => sys.error(error.toString)
+    case Left(error)  => throw new IllegalArgumentException(error.toString)
 
-val record =
-  expectRight(
-    DomainRecord.parse(
-      id = "example-vertices-v1",
-      name = "mesh vertices",
-      size = 5
-    )
-  )
+val voxelOwner = expectRight(FiniteDomain.ephemeral("voxels", size = 5))
+val vertexOwner =
+  expectRight(FiniteDomain.ephemeral("surface vertices", size = 5))
 
-val resolution = expectRight(DomainRegistry.empty.register(record))
-val vertices = resolution.space
-val signal = VectorField.tabulate(vertices)(index => index.ordinal * 10.0)
-val vertex = expectRight(vertices.index(3))
+val voxels = voxelOwner.value
+val vertices = vertexOwner.value
+
+val signal = VectorField.tabulate(voxels)(_.ordinal * 10.0)
+val voxel3 = expectRight(voxels.index(3))
+val vertex3 = expectRight(vertices.index(3))
 ```
 
 ```scala mdoc
-signal(vertex)
+signal(voxel3)
 ```
 
-Once both values carry the same owner type, lookup is total: it returns the
-value, not an ownership error.
+The same ordinal from the other domain is rejected at compile time:
+
+```scala mdoc:fail
+signal(vertex3)
+```
+
+Once an index and a field share an owner type, lookup is total: it returns the
+value, not an ownership error. The helper throws only to keep the first example
+short; applications can retain constructor errors in their usual error type.
 
 ## Follow the guide
 

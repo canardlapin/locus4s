@@ -4,6 +4,8 @@
 
 Identity-safe finite domains for Scala 3 on the JVM and Scala.js.
 
+**[Read the rendered Scala guide](https://canardlapin.github.io/locus4s/)**
+
 ## Why locus4s?
 
 Scientific programs often have several integer-indexed collections in memory at
@@ -47,33 +49,47 @@ locus4s supplies these identity and indexing rules, not an imaging data model.
 Geometry, coordinates, image formats, interpolation, neighborhood policy, and
 numerical arrays remain downstream.
 
-## First look
+## The mistake locus4s prevents
+
+This example creates two process-local domains with the same size:
 
 ```scala
 import locus4s.*
 import locus4s.data.*
 
-val result =
-  for
-    record <- DomainRecord.parse("mesh-v1", "mesh vertices", size = 5)
-    restored <- DomainRegistry.empty.register(record)
-    vertex <- restored.space.index(3)
-  yield
-    val signal =
-      VectorField.tabulate(restored.space)(_.ordinal * 10.0)
-    signal(vertex)
+def expectRight[E, A](result: Either[E, A]): A =
+  result match
+    case Right(value) => value
+    case Left(error)  => throw new IllegalArgumentException(error.toString)
 
-// result: Right(30.0)
+val voxelOwner = expectRight(FiniteDomain.ephemeral("voxels", size = 5))
+val vertexOwner =
+  expectRight(FiniteDomain.ephemeral("surface vertices", size = 5))
+
+val voxels = voxelOwner.value
+val vertices = vertexOwner.value
+
+val signal = VectorField.tabulate(voxels)(_.ordinal * 10.0)
+val voxel3 = expectRight(voxels.index(3))
+val vertex3 = expectRight(vertices.index(3))
+
+signal(voxel3)  // 30.0
+// signal(vertex3) does not compile: vertex3 belongs to a different domain
 ```
 
-Raw ordinals are checked when they enter a domain. Once `vertex` and `signal`
-share the same owner type, lookup is total. Invalid names, negative sizes,
-out-of-bounds ordinals, and conflicting persisted identities are reported by
-the constructors as `Left` values.
+Both domains contain ordinal `3`, so bounds checking alone cannot detect the
+mistake. Their owner types differ, however, so `signal(vertex3)` is rejected at
+compile time. Once an index and a field share an owner, `signal(voxel3)` is a
+total lookup and returns the value directly.
 
-The executable [Scala guide](docs/README.md) continues with installation,
-ownership and alignment, regions and selections, maps and relations, fields and
-aggregation, persistence, and an imaging-shaped workflow.
+The helper turns constructor errors into exceptions to keep this first example
+short. Applications can instead keep those errors in `Either`, `IO`, or their
+existing error type.
+
+The executable
+[Scala guide](https://canardlapin.github.io/locus4s/) continues with
+installation, ownership and alignment, regions and selections, maps and
+relations, fields and aggregation, persistence, and an imaging-shaped workflow.
 
 ## Modules
 
@@ -101,7 +117,8 @@ snapshot is available from a public repository.
 
 ## Documentation
 
-- [Scala guide](docs/README.md)
+- [Rendered Scala guide](https://canardlapin.github.io/locus4s/)
+- [Guide source](docs/README.md)
 - [Ownership and alignment](docs/concepts/ownership.md)
 - [Fields and aggregation](docs/guides/fields-and-aggregation.md)
 - [Complexity and allocation contracts](docs/reference/complexity.md)
