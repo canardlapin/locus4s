@@ -1,223 +1,99 @@
 # locus4s
 
-locus4s provides finite domains whose indices cannot be mixed accidentally.
-It is useful when an integer such as `42` is meaningful only within one mask,
-parcel set, surface, graph, or other finite collection.
+[![CI](https://github.com/canardlapin/locus4s/actions/workflows/ci.yml/badge.svg)](https://github.com/canardlapin/locus4s/actions/workflows/ci.yml)
 
-The library separates three facts:
+Identity-safe finite domains for Scala 3 on the JVM and Scala.js.
 
-- `Index[S]` is an ordinal owned by one live `FiniteDomain[S]`.
-- `DomainKey` identifies a persistable indexed domain across processes.
-- `DomainAlignment[A, B]` proves that two independently restored live owners
-  represent the same persisted domain.
+A point is not merely an integer. It is a bounded ordinal owned by one finite
+domain. locus4s makes that ownership explicit, distinguishes live owners from
+persistent identity, and supplies the small algebra needed to move regions,
+selections, maps, relations, and fields without exchanging naked indices.
 
-Geometry, coordinates, image formats, interpolation, parcellation policy, and
-numerical tensor operations remain downstream.
+Geometry, coordinates, image formats, interpolation, neighborhood policy, and
+numerical arrays remain downstream.
 
-## Modules
-
-| Artifact | Provides |
-|---|---|
-| `locus4s-core` | domains, zero-cost indices, regions, selections, maps, relations, alignment, and neutral persistence records |
-| `locus4s-data` | representation-neutral fields, vector fields, views, pullback, and deterministic pushforward |
-| `locus4s-laws` | reusable laws for the core and data algebras |
-
-The dependency direction is:
-
-```text
-locus4s-laws ──> locus4s-data ──> locus4s-core
-       └────────────────────────> locus4s-core
-```
-
-All three modules cross-compile for the JVM and Scala.js. `locus4s-core` has no
-runtime dependencies.
-
-## Create and use a domain
-
-Applications supply persistent IDs. `DomainRegistry` deliberately does not
-mint them: an immutable registry cannot guarantee freshness when callers branch
-its state.
+## First look
 
 ```scala
 import locus4s.*
 import locus4s.data.*
 
-val record =
-  DomainRecord.parse(
-    id = "subject-17-brain-mask-v1",
-    name = "brain mask",
-    size = 120_000,
-    fingerprint = Some("sha256:...")
-  )
-
-val resolution =
-  record.flatMap(DomainRegistry.empty.register)
-
-resolution.map: resolved =>
-  val voxels = resolved.space
-  val field = VectorField.tabulate(voxels)(index => index.ordinal.toDouble)
-
-  voxels.index(42).map: index =>
-    field(index) // Double; typed lookup is total
-```
-
-`DomainKey` contains the ID, size, and optional opaque fingerprint. All three
-participate in structural identity. `DomainMetadata` contains the display
-name. Renaming a record does not change its key. A registry that has already
-restored that key returns its existing live owner and retains the metadata from
-the first registration.
-
-The fingerprint has no built-in interpretation. A downstream grid or topology
-library may store a canonical digest there without adding geometry to locus4s.
-
-## Typed operations and dynamic boundaries
-
-One static owner type `S` denotes one live owner. Public constructors return
-existential owner types, and consumers cannot construct a second
-`FiniteDomain[S]` or forge an `Index[S]`.
-
-Operations between values with the same owner type are total:
-
-```scala
-field(index)
-left.union(right)
-first.andThen(second)
-relation.andThen(next)
-field.pullback(mapping)
-```
-
-Checked variants handle values whose owner types were hidden by loading,
-decoding, or other dynamic code:
-
-```scala
-left.unionChecked(dynamicallyLoadedRegion)
-first.andThenChecked(dynamicallyLoadedMap)
-field.zipWithChecked(dynamicallyLoadedField)(_ + _)
-```
-
-These methods require the same live owner. If two owners were restored
-independently, align them and transport one value before entering the typed
-API:
-
-```scala
-for
-  alignment <- leftSpace.align(rightSpace)
-yield
-  val localRight = alignment.reverse.transport(rightRegion)
-  leftRegion.union(localRight)
-```
-
-Alignment has identity, reverse, and associative composition. Its ordinal
-action is identity, so transport shares immutable storage.
-
-## Selections retain their position domain
-
-An ordered `Selection[S]` is an injection from a finite position domain `I`
-into `S`. Gathering therefore returns `Field[I, A]`, not an identity-free
-`Vector[A]`.
-
-```scala
-val selected =
+val result =
   for
-    selection <- Selection.fromOrdinals(voxels, Vector(9, 2, 7))
-  yield field.gather(selection)
+    record <- DomainRecord.parse("mesh-v1", "mesh vertices", size = 5)
+    restored <- DomainRegistry.empty.register(record)
+    vertex <- restored.space.index(3)
+  yield
+    val signal =
+      VectorField.tabulate(restored.space)(_.ordinal * 10.0)
+    signal(vertex)
 ```
 
-The result is indexed in selection order. `selection.support` is the unordered
-region embedded in the source domain.
+Raw ordinals are checked when they enter a domain. Once `vertex` and `signal`
+share the same owner type, lookup is total.
 
-Selection position domains are ephemeral by default. To persist a selection,
-the caller supplies a `DomainRecord` for those positions:
+The executable [Scala guide](docs/README.md) continues with installation,
+ownership and alignment, regions and selections, maps and relations, fields and
+aggregation, persistence, and an imaging-shaped workflow.
 
-```scala
-val persisted =
-  for
-    selection <- Selection.fromOrdinals(voxels, Vector(9, 2, 7))
-    positionRecord <- DomainRecord.parse(
-      "subject-17-roi-v1",
-      "ROI positions",
-      selection.size
-    )
-    record <- Persistence.record(selection, positionRecord)
-  yield record
+## Modules
+
+| Artifact | Purpose |
+|---|---|
+| `locus4s-core` | zero-cost indices, domains, regions, selections, maps, relations, alignment, persistence records |
+| `locus4s-data` | representation-neutral fields, views, pullback, sections, deterministic aggregation |
+| `locus4s-laws` | reusable laws for the core and data algebras |
+
+All modules cross-compile for the JVM and Scala.js. `locus4s-core` has no
+runtime dependencies.
+
+## Status and installation
+
+locus4s is pre-1.0 and currently built as `0.1.0-SNAPSHOT`; no stable release is
+advertised yet. To try it from this checkout, publish the required projection
+locally and use the displayed snapshot version:
+
+```text
+sbt locus4s-coreJVM/publishLocal locus4s-dataJVM/publishLocal
 ```
 
-This explicit step prevents two independently derived orderings from acquiring
-the same persistent identity by accident.
+The guide records the eventual sbt coordinates without implying that the
+snapshot is available from a public repository.
 
-## Fields do not prescribe storage
+## Documentation
 
-`Field[S, A]` requires a domain, typed indexed access, and ordered traversal.
-It does not require `Vector`. A memory-mapped image, primitive array, chunked
-volume, JavaScript typed array, GPU view, or packed mask can implement the
-interface directly.
+- [Scala guide](docs/README.md)
+- [Ownership and alignment](docs/concepts/ownership.md)
+- [Fields and aggregation](docs/guides/fields-and-aggregation.md)
+- [Complexity and allocation contracts](docs/reference/complexity.md)
+- [Compatibility policy](docs/reference/compatibility.md)
+- [API reference](docs/reference/api-reference.md)
 
-`VectorField` is the immutable reference implementation. `Field.view` creates
-a non-owning view. `FieldBuilder` lets materializing algorithms choose their
-destination storage. Mapping and pullback create views; aggregation accepts any
-`Field` and an explicit destination builder.
+Build the executable guide and API documentation with:
 
-## Imaging-shaped use without imaging policy
-
-Suppose a downstream reader has already established voxel and parcel domain
-records:
-
-```scala
-val signal: Field[Voxel, Float] = readerBackedField
-val mask: Region[Voxel] = loadedMask
-val packed: Selection[Voxel] = orderedMask
-val voxelToParcel: Surjection[packed.I, Parcel] = loadedParcellation
-val searchlights: Relation[Center, Voxel] = loadedSearchlights
-
-val maskedSignal: Field[packed.I, Float] =
-  signal.gather(packed)
-
-val parcelSums: Field[Parcel, Float] =
-  Aggregation.pushForward(voxelToParcel.toTotalMap, maskedSignal)(0.0f)(
-    identity
-  )(_ + _)
+```text
+sbt docsCheck
 ```
 
-locus4s supplies the identities and finite-domain algebra. The downstream
-library still decides how a voxel relates to coordinates, how masks are read,
-and how parcels or searchlights are defined.
+`docsCheck` compiles the JVM Scaladoc for all three modules, evaluates the mdoc
+examples, validates links, and renders the Laika site. Site deployment is not
+configured.
 
-## Performance contracts
-
-`Index[S]` is an opaque `Int`. `foreachIndex` does not allocate one object per
-ordinal. Regions use constant-size `Empty` and `Whole` representations plus
-sparse sorted storage. Relations use compressed sparse rows. Rebinding shares
-immutable storage.
-
-See [Complexity and allocation contracts](docs/complexity.md) for operation
-costs and representation limits. The test suite includes:
-
-- JVM per-thread allocated-byte checks over millions of typed visits;
-- JVM and Scala.js sparse-relation courts with a billion-element declared
-  target domain;
-- a separate full-optimization Scala.js test lane.
-
-## Build and release gates
+## Development gates
 
 ```text
 sbt checkAll
 sbt testFullOptJS
+sbt docsCheck
 ```
 
-`checkAll` checks formatting, compiles every JVM/Scala.js module, and runs all
-tests. Strict warnings include unused code and discarded values, and warnings
-fail the build.
-
-The current compatibility policy is documented in
-[Compatibility policy](docs/compatibility.md). The downstream migration from
-the initial prototype is described in
-[Downstream migration](docs/downstream-migration.md).
+These gates cover deterministic formatting, strict compilation, JVM and
+Scala.js tests, a full-optimized Scala.js lane, API documentation, and the
+executable guide.
 
 ## Deliberate non-goals
 
 locus4s does not define voxel coordinates, grid shapes or strides, coordinate
-frames, affine or nonlinear transforms, interpolation weights, file formats,
-image orientation, parcellation labels or hierarchy, searchlight generation,
-BIDS entities, or numerical tensor operations. Weighted sparse operators also
-remain downstream unless a separate representation-sharing interface is
-justified.
+frames, affine or nonlinear transforms, interpolation weights, NIfTI or DICOM
+I/O, image orientation, parcellation labels or hierarchy, searchlight
+generation, BIDS entities, or tensor operations.
