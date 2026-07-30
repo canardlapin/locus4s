@@ -1,13 +1,11 @@
 package locus4s
 
+import scala.collection.mutable
+
 enum SelectionError:
   case OutOfBounds(position: Int, pointOrdinal: Int, size: Int)
   case DuplicateOrdinal(pointOrdinal: Int)
-  case ForeignDomain(
-      position: Int,
-      expected: DomainRecord,
-      actual: DomainRecord
-  )
+  case InvalidInjection(error: CertifiedMapError)
 
   def message: String =
     this match
@@ -15,139 +13,178 @@ enum SelectionError:
         s"selection ordinal at position $position is outside [0, $size): $pointOrdinal"
       case DuplicateOrdinal(pointOrdinal) =>
         s"selection contains duplicate ordinal $pointOrdinal"
-      case ForeignDomain(position, expected, actual) =>
-        s"selection point at position $position belongs to ${actual.id.value}, " +
-          s"expected ${expected.id.value}"
+      case InvalidInjection(error) =>
+        error.message
 
-/** An immutable, ordered, duplicate-free sequence of domain points. */
-final class Selection[S] private (
-    val space: FiniteSpace[S],
-    private val ordered: Array[Int],
-    val region: Region[S]
-):
-  def size: Int =
-    ordered.length
+/** An ordered finite selection represented by an injection into its source.
+  *
+  * The path-dependent position domain `I` owns the compact ordering. Gathering through
+  * `embedding` therefore produces values on a real finite domain rather than an
+  * identity-free collection.
+  */
+sealed trait Selection[S]:
+  type I
 
-  def isEmpty: Boolean =
-    ordered.isEmpty
+  val space: FiniteDomain[S]
+  val positions: FiniteDomain[I]
+  val embedding: Injection[I, S]
+  val support: Region[S]
 
-  def get(index: Int): Option[Point[S]] =
-    if index >= 0 && index < ordered.length then
-      space.pointOption(ordered(index))
-    else
-      None
+  final def region: Region[S] =
+    support
 
-  def points: Iterator[Point[S]] =
-    ordered.iterator.flatMap(space.pointOption)
+  final def size: Int =
+    positions.size
 
-  def ordinals: Array[Int] =
-    ordered.clone()
+  final def isEmpty: Boolean =
+    positions.size == 0
 
-  /** Rebind this selection through checked persistent-domain evidence. */
-  def rebind[B](
-      alignment: DomainAlignment[S, B]
-  ): Either[SpaceMismatch, Selection[B]] =
-    if !space.sameRuntimeOwnerAs(alignment.left) then
-      Left(alignment.left.mismatch(space))
-    else
-      region.rebind(alignment).map: reboundRegion =>
-        new Selection(alignment.right, ordered.clone(), reboundRegion)
+  final def apply(position: Index[I]): Index[S] =
+    embedding(position)
 
-  override def equals(other: Any): Boolean =
-    other match
-      case that: Selection[?] =>
-        space == that.space && Selection.sameOrdinals(ordered, that.ordered)
-      case _ =>
-        false
+  final def get(position: Int): Option[Index[S]] =
+    positions.indexOption(position).map(embedding.apply)
 
-  override def hashCode(): Int =
-    var result = space.hashCode()
-    var index = 0
-    while index < ordered.length do
-      result = 31 * result + ordered(index)
-      index += 1
-    result
+  final def foreachIndex(f: Index[S] => Unit): Unit =
+    positions.foreachIndex(position => f(embedding(position)))
 
-  override def toString: String =
-    s"Selection(${space.name.value}, size=$size)"
+  final def indices: Iterator[Index[S]] =
+    positions.indices.map(embedding.apply)
+
+  /** Compatibility spelling for `indices`. */
+  final def points: Iterator[Index[S]] =
+    indices
+
+  /** Dynamic-boundary copy in selection-position order. */
+  final def ordinals: Array[Int] =
+    embedding.toTotalMap.targetOrdinals
+
+  /** O(1) source transport sharing positions and target storage. */
+  def rebind[B](alignment: DomainAlignment[S, B]): Selection[B]
 
 object Selection:
-  def empty[S](space: FiniteSpace[S]): Selection[S] =
-    new Selection(space, Array.emptyIntArray, Region.empty(space))
+  type Aux[S, J] = Selection[S] { type I = J }
 
-  def fromRegion[S](region: Region[S]): Selection[S] =
-    new Selection(region.space, region.ordinalsInDomainOrder, region)
+  private final class Impl[S, J](
+      val space: FiniteDomain[S],
+      val positions: FiniteDomain[J],
+      val embedding: Injection[J, S],
+      val support: Region[S]
+  ) extends Selection[S]:
+    type I = J
+
+    def rebind[B](alignment: DomainAlignment[S, B]): Selection[B] =
+      new Impl(
+        alignment.right,
+        positions,
+        embedding.rebindTo(alignment),
+        support.rebind(alignment)
+      )
+
+    override def equals(other: Any): Boolean =
+      other match
+        case that: Selection[?] =>
+          space == that.space &&
+          Selection.sameOrdinals(ordinals, that.ordinals)
+        case _ =>
+          false
+
+    override def hashCode(): Int =
+      var result = space.hashCode()
+      val values = ordinals
+      var index = 0
+      while index < values.length do
+        result = 31 * result + values(index)
+        index += 1
+      result
+
+    override def toString: String =
+      s"Selection(${space.name.value}, size=$size)"
+
+  def fromEmbedding[I, S](
+      embedding: Injection[I, S]
+  ): Selection.Aux[S, I] =
+    new Impl(
+      embedding.to,
+      embedding.from,
+      embedding,
+      embedding.support
+    )
+
+  def empty[S](
+      space: FiniteDomain[S]
+  ): Either[SelectionError, Selection[S]] =
+    fromValidatedOrdinals(space, Array.emptyIntArray)
+
+  def fromRegion[S](
+      region: Region[S]
+  ): Either[SelectionError, Selection[S]] =
+    fromValidatedOrdinals(region.space, region.ordinalsInDomainOrder)
 
   def fromOrdinals[S](
-      space: FiniteSpace[S],
+      space: FiniteDomain[S],
       ordinals: IterableOnce[Int]
   ): Either[SelectionError, Selection[S]] =
     val input = ordinals.iterator.toArray
-    val seen = scala.collection.mutable.HashSet.empty[Int]
-    var index = 0
+    val seen = mutable.HashSet.empty[Int]
+    var position = 0
     var error = Option.empty[SelectionError]
-    while index < input.length && error.isEmpty do
-      val ordinal = input(index)
+    while position < input.length && error.isEmpty do
+      val ordinal = input(position)
       if !space.containsOrdinal(ordinal) then
-        error =
-          Some(SelectionError.OutOfBounds(index, ordinal, space.size))
-      else if seen.contains(ordinal) then
+        error = Some(
+          SelectionError.OutOfBounds(
+            position,
+            ordinal,
+            space.size
+          )
+        )
+      else if !seen.add(ordinal) then
         error = Some(SelectionError.DuplicateOrdinal(ordinal))
-      else
-        seen += ordinal
-      index += 1
+      position += 1
 
     error match
-      case Some(value) =>
-        Left(value)
-      case None =>
-        fromValidatedInput(space, input)
+      case Some(value) => Left(value)
+      case None        => fromValidatedOrdinals(space, input)
 
-  def fromPoints[S](
-      space: FiniteSpace[S],
-      points: IterableOnce[Point[S]]
+  def fromIndices[S](
+      space: FiniteDomain[S],
+      indices: IterableOnce[Index[S]]
   ): Either[SelectionError, Selection[S]] =
-    val input = points.iterator.toArray
-    val ordinals = Array.ofDim[Int](input.length)
-    val seen = scala.collection.mutable.HashSet.empty[Int]
-    var index = 0
-    var error = Option.empty[SelectionError]
-    while index < input.length && error.isEmpty do
-      val point = input(index)
-      space.validate(point) match
-        case Left(PointError.OutOfBounds(ordinal, size)) =>
-          error =
-            Some(SelectionError.OutOfBounds(index, ordinal, size))
-        case Left(PointError.ForeignDomain(expected, actual)) =>
-          error =
-            Some(SelectionError.ForeignDomain(index, expected, actual))
-        case Right(ordinal) =>
-          if seen.contains(ordinal) then
-            error = Some(SelectionError.DuplicateOrdinal(ordinal))
-          else
-            ordinals(index) = ordinal
-            seen += ordinal
-      index += 1
+    fromOrdinals(space, indices.iterator.map(_.ordinal))
 
-    error match
-      case Some(value) =>
-        Left(value)
-      case None =>
-        fromValidatedInput(space, ordinals)
+  /** Compatibility spelling for `fromIndices`. */
+  def fromPoints[S](
+      space: FiniteDomain[S],
+      points: IterableOnce[Index[S]]
+  ): Either[SelectionError, Selection[S]] =
+    fromIndices(space, points)
 
-  private def fromValidatedInput[S](
-      space: FiniteSpace[S],
+  private def fromValidatedOrdinals[S](
+      space: FiniteDomain[S],
       ordered: Array[Int]
   ): Either[SelectionError, Selection[S]] =
-    Region.fromOrdinals(space, ordered) match
-      case Left(RegionError.OutOfBounds(position, ordinal, size)) =>
-        Left(SelectionError.OutOfBounds(position, ordinal, size))
-      case Left(RegionError.ForeignDomain(position, expected, actual)) =>
-        Left(SelectionError.ForeignDomain(position, expected, actual))
-      case Right(region) =>
-        Right(new Selection(space, ordered, region))
+    val positionName =
+      DomainName
+        .parse(s"${space.name.value} selection positions")
+        .fold(_ => space.name, identity)
+    val packed =
+      FiniteDomain.ephemeralValidated(positionName, ordered.length)
+    val positions = packed.value
+    val mapping =
+      TotalMap.tabulate(positions, space)(position =>
+        space.indexAtOrdinal(ordered(position.ordinal))
+      )
+    Injection
+      .fromTotalMap(mapping)
+      .left
+      .map(SelectionError.InvalidInjection.apply)
+      .map(embedding => new Impl(space, positions, embedding, embedding.support))
 
-  private def sameOrdinals(left: Array[Int], right: Array[Int]): Boolean =
+  private def sameOrdinals(
+      left: Array[Int],
+      right: Array[Int]
+  ): Boolean =
     if left.length != right.length then false
     else
       var index = 0

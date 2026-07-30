@@ -3,6 +3,7 @@ package locus4s
 enum DomainError:
   case EmptyId
   case EmptyName
+  case EmptyFingerprint
   case NegativeSize(size: Int)
 
   def message: String =
@@ -11,6 +12,8 @@ enum DomainError:
         "domain id must be non-empty"
       case EmptyName =>
         "domain name must be non-empty"
+      case EmptyFingerprint =>
+        "domain fingerprint must be non-empty when supplied"
       case NegativeSize(size) =>
         s"domain size must be non-negative, found $size"
 
@@ -38,168 +41,258 @@ object DomainName:
     def value: String =
       name
 
-/** Stable data sufficient to persist and restore a finite domain.
+/** Optional opaque structural fingerprint supplied by a downstream domain owner.
   *
-  * Runtime ownership is intentionally absent. Restoring this record through a
-  * registry recovers one live owner for that registry.
+  * locus4s never interprets this value. A geometry or topology library may use it to
+  * distinguish two indexed domains that share a size but not a canonical structure.
   */
-final class DomainRecord private (
+opaque type DomainFingerprint = String
+
+object DomainFingerprint:
+  def parse(value: String): Either[DomainError, DomainFingerprint] =
+    val normalized = value.trim
+    if normalized.isEmpty then Left(DomainError.EmptyFingerprint)
+    else Right(normalized)
+
+  extension (fingerprint: DomainFingerprint)
+    def value: String =
+      fingerprint
+
+/** Stable structural identity for a persistable finite domain.
+  *
+  * Presentation metadata is deliberately absent. Two records with the same key denote
+  * the same persisted indexed domain even when their labels differ.
+  */
+final class DomainKey private (
     val id: DomainId,
-    val name: DomainName,
-    val size: Int
+    val size: Int,
+    val fingerprint: Option[DomainFingerprint]
 ):
   override def equals(other: Any): Boolean =
     other match
-      case that: DomainRecord =>
-        id == that.id && name == that.name && size == that.size
+      case that: DomainKey =>
+        id == that.id &&
+        size == that.size &&
+        fingerprint == that.fingerprint
       case _ =>
         false
 
   override def hashCode(): Int =
-    31 * (31 * id.hashCode() + name.hashCode()) + size
+    31 * (31 * id.hashCode() + size) + fingerprint.hashCode()
 
   override def toString: String =
-    s"DomainRecord(${id.value}, ${name.value}, $size)"
+    val suffix =
+      fingerprint.fold("")(value => s", fingerprint=${value.value}")
+    s"DomainKey(${id.value}, size=$size$suffix)"
+
+object DomainKey:
+  def make(
+      id: DomainId,
+      size: Int,
+      fingerprint: Option[DomainFingerprint] = None
+  ): Either[DomainError, DomainKey] =
+    DomainId
+      .parse(id.value)
+      .flatMap: parsedId =>
+        if size < 0 then Left(DomainError.NegativeSize(size))
+        else
+          val validatedFingerprint =
+            fingerprint match
+              case Some(value) =>
+                DomainFingerprint.parse(value.value).map(Some(_))
+              case None =>
+                Right(None)
+          validatedFingerprint.map(new DomainKey(parsedId, size, _))
+
+  def parse(
+      id: String,
+      size: Int,
+      fingerprint: Option[String] = None
+  ): Either[DomainError, DomainKey] =
+    for
+      parsedId <- DomainId.parse(id)
+      parsedFingerprint <-
+        fingerprint match
+          case Some(value) => DomainFingerprint.parse(value).map(Some(_))
+          case None        => Right(None)
+      key <- make(parsedId, size, parsedFingerprint)
+    yield key
+
+/** Human-facing metadata that may change without changing domain identity. */
+final class DomainMetadata private (val name: DomainName):
+  override def equals(other: Any): Boolean =
+    other match
+      case that: DomainMetadata =>
+        name == that.name
+      case _ =>
+        false
+
+  override def hashCode(): Int =
+    name.hashCode()
+
+  override def toString: String =
+    s"DomainMetadata(${name.value})"
+
+object DomainMetadata:
+  def make(name: DomainName): Either[DomainError, DomainMetadata] =
+    DomainName.parse(name.value).map(new DomainMetadata(_))
+
+  def parse(name: String): Either[DomainError, DomainMetadata] =
+    DomainName.parse(name).map(new DomainMetadata(_))
+
+/** Persistable domain description.
+  *
+  * Runtime ownership is intentionally absent. Restoring this record through a registry
+  * recovers one live owner for its structural key in that registry.
+  */
+final class DomainRecord private (
+    val key: DomainKey,
+    val metadata: DomainMetadata
+):
+  def id: DomainId =
+    key.id
+
+  def name: DomainName =
+    metadata.name
+
+  def size: Int =
+    key.size
+
+  def fingerprint: Option[DomainFingerprint] =
+    key.fingerprint
+
+  def samePersistentIdentityAs(that: DomainRecord): Boolean =
+    key == that.key
+
+  override def equals(other: Any): Boolean =
+    other match
+      case that: DomainRecord =>
+        key == that.key && metadata == that.metadata
+      case _ =>
+        false
+
+  override def hashCode(): Int =
+    31 * key.hashCode() + metadata.hashCode()
+
+  override def toString: String =
+    s"DomainRecord($key, $metadata)"
 
 object DomainRecord:
   def make(
+      key: DomainKey,
+      name: String
+  ): Either[DomainError, DomainRecord] =
+    DomainMetadata.parse(name).map(new DomainRecord(key, _))
+
+  def make(
       id: DomainId,
       name: String,
-      size: Int
+      size: Int,
+      fingerprint: Option[DomainFingerprint] = None
   ): Either[DomainError, DomainRecord] =
     for
-      parsedId <- DomainId.parse(id.value)
-      parsedName <- DomainName.parse(name)
-      record <- fromValidated(parsedId, parsedName, size)
+      key <- DomainKey.make(id, size, fingerprint)
+      record <- make(key, name)
     yield record
 
   def parse(
       id: String,
       name: String,
-      size: Int
+      size: Int,
+      fingerprint: Option[String] = None
   ): Either[DomainError, DomainRecord] =
     for
-      parsedId <- DomainId.parse(id)
-      record <- make(parsedId, name, size)
+      key <- DomainKey.parse(id, size, fingerprint)
+      record <- make(key, name)
     yield record
 
-  private def fromValidated(
-      id: DomainId,
+/** Safe diagnostic description of either a persisted or an ephemeral owner. */
+final class DomainDescriptor private (
+    val name: DomainName,
+    val size: Int,
+    val persistentKey: Option[DomainKey]
+):
+  override def equals(other: Any): Boolean =
+    other match
+      case that: DomainDescriptor =>
+        name == that.name &&
+        size == that.size &&
+        persistentKey == that.persistentKey
+      case _ =>
+        false
+
+  override def hashCode(): Int =
+    31 * (31 * name.hashCode() + size) + persistentKey.hashCode()
+
+  override def toString: String =
+    persistentKey match
+      case Some(key) =>
+        s"DomainDescriptor(${name.value}, $key)"
+      case None =>
+        s"DomainDescriptor(${name.value}, size=$size, ephemeral)"
+
+object DomainDescriptor:
+  private[locus4s] def persistent(record: DomainRecord): DomainDescriptor =
+    new DomainDescriptor(record.name, record.size, Some(record.key))
+
+  private[locus4s] def ephemeral(
       name: DomainName,
       size: Int
-  ): Either[DomainError, DomainRecord] =
-    if size < 0 then Left(DomainError.NegativeSize(size))
-    else Right(new DomainRecord(id, name, size))
+  ): DomainDescriptor =
+    new DomainDescriptor(name, size, None)
 
 enum DomainRestoreError:
-  case ConflictingRecord(existing: DomainRecord, requested: DomainRecord)
+  case ConflictingKey(existing: DomainRecord, requested: DomainRecord)
 
   def message: String =
     this match
-      case ConflictingRecord(existing, requested) =>
-        s"domain id ${requested.id.value} is already registered as " +
-          s"${existing.name.value}[${existing.size}], not " +
-          s"${requested.name.value}[${requested.size}]"
+      case ConflictingKey(existing, requested) =>
+        s"domain id ${requested.id.value} is already registered with " +
+          s"${existing.key}, not ${requested.key}"
 
 final case class DomainAlignmentError(
-    left: DomainRecord,
-    right: DomainRecord
+    left: DomainDescriptor,
+    right: DomainDescriptor
 ):
   def message: String =
-    s"domains do not align: ${left.id.value}/${left.name.value}[${left.size}] " +
-      s"!= ${right.id.value}/${right.name.value}[${right.size}]"
+    s"domains do not align: $left != $right"
 
-final case class SpaceMismatch(
-    expected: DomainRecord,
-    actual: DomainRecord,
-    persistentIdentityMatches: Boolean
+/** Runtime owner mismatch whose persistent-identity facts are always derived. */
+final class SpaceMismatch private (
+    val expected: DomainDescriptor,
+    val actual: DomainDescriptor
 ):
+  def persistentIdentityMatches: Boolean =
+    expected.persistentKey.nonEmpty &&
+      expected.persistentKey == actual.persistentKey
+
   def message: String =
     val suffix =
       if persistentIdentityMatches then
-        "; persistent records agree but runtime owners differ; align explicitly"
+        "; persistent keys agree but runtime owners differ; align explicitly"
       else ""
-    s"domain owner mismatch: expected ${expected.id.value}, " +
-      s"found ${actual.id.value}$suffix"
+    s"domain owner mismatch: expected $expected, found $actual$suffix"
 
-enum DomainIdSourceError:
-  case Exhausted
-  case InvalidGeneratedId(error: DomainError)
+  override def equals(other: Any): Boolean =
+    other match
+      case that: SpaceMismatch =>
+        expected == that.expected && actual == that.actual
+      case _ =>
+        false
 
-  def message: String =
-    this match
-      case Exhausted =>
-        "domain id source is exhausted"
-      case InvalidGeneratedId(error) =>
-        s"domain id source generated an invalid id: ${error.message}"
+  override def hashCode(): Int =
+    31 * expected.hashCode() + actual.hashCode()
 
-enum DomainIdSourceConfigError:
-  case InvalidPrefix(error: DomainError)
-  case NegativeStart(startAt: Long)
+  override def toString: String =
+    s"SpaceMismatch($expected, $actual)"
 
-  def message: String =
-    this match
-      case InvalidPrefix(error) =>
-        s"invalid domain id prefix: ${error.message}"
-      case NegativeStart(startAt) =>
-        s"domain id sequence start must be non-negative, found $startAt"
-
-/** One immutable step from an explicit persistent-identity source. */
-final case class DomainIdStep(
-    id: DomainId,
-    nextSource: DomainIdSource
-)
-
-/** Explicit, immutable policy for generating persistent domain identifiers.
-  *
-  * Implementations must be referentially transparent: repeated evaluation of
-  * `next` on the same source value must return the same step.
-  */
-trait DomainIdSource:
-  def next: Either[DomainIdSourceError, DomainIdStep]
-
-object DomainIdSource:
-  def sequential(
-      prefix: String,
-      startAt: Long = 0L
-  ): Either[DomainIdSourceConfigError, DomainIdSource] =
-    DomainId
-      .parse(prefix)
-      .left
-      .map(DomainIdSourceConfigError.InvalidPrefix.apply)
-      .flatMap: parsedPrefix =>
-      if startAt < 0 then
-        Left(DomainIdSourceConfigError.NegativeStart(startAt))
-      else Right(Sequential(parsedPrefix, startAt))
-
-  private final case class Sequential(
-      prefix: DomainId,
-      nextValue: Long
-  ) extends DomainIdSource:
-    def next: Either[DomainIdSourceError, DomainIdStep] =
-      if nextValue == Long.MaxValue then
-        Left(DomainIdSourceError.Exhausted)
-      else
-        DomainId
-          .parse(s"${prefix.value}-$nextValue")
-          .left
-          .map(DomainIdSourceError.InvalidGeneratedId.apply)
-          .map: id =>
-            DomainIdStep(id, copy(nextValue = nextValue + 1L))
-
-enum DomainFreshError:
-  case MissingIdSource
-  case InvalidRecord(error: DomainError)
-  case IdSourceFailure(error: DomainIdSourceError)
-  case GeneratedIdCollision(id: DomainId)
-
-  def message: String =
-    this match
-      case MissingIdSource =>
-        "fresh construction requires an explicit DomainIdSource"
-      case InvalidRecord(error) =>
-        error.message
-      case IdSourceFailure(error) =>
-        error.message
-      case GeneratedIdCollision(id) =>
-        s"domain id source generated an already registered id: ${id.value}"
+object SpaceMismatch:
+  /** Construct an invariant-safe diagnostic from the two actual owners.
+    *
+    * The persistent-identity fact is derived and cannot be supplied by the caller.
+    */
+  def between(
+      expected: FiniteDomain[?],
+      actual: FiniteDomain[?]
+  ): SpaceMismatch =
+    new SpaceMismatch(expected.descriptor, actual.descriptor)

@@ -5,90 +5,154 @@ import locus4s.SpaceMismatch
 import locus4s.TotalMap
 import scala.collection.mutable.ArrayBuffer
 
-/** Deterministic, domain-neutral aggregation in source-domain order. */
+/** Deterministic finite-domain pushforward in increasing source order.
+  *
+  * Algorithms access private immutable map/relation storage directly and never clone
+  * the grouping before folding.
+  */
 object Aggregation:
-  /** Fold one contribution from every source through a total grouping map.
-    *
-    * `empty` is evaluated independently for every target point.
-    */
-  def foldMapBy[X, FX, Y, A, M](
+  def foldMapBy[X, Y, A, M](
       grouping: TotalMap[X, Y],
-      field: IndexedField[FX, A]
+      field: Field[X, A]
   )(
       empty: => M
   )(
       contribution: A => M
   )(
       combine: (M, M) => M
-  ): Either[SpaceMismatch, IndexedField[Y, M]] =
-    if !grouping.from.sameRuntimeOwnerAs(field.space) then
-      Left(
-        SpaceMismatch(
-          grouping.from.record,
-          field.space.record,
-          grouping.from.samePersistentIdentityAs(field.space)
-        )
-      )
-    else
-      val accumulated =
-        freshAccumulators(grouping.to.size, empty)
-      val targets = grouping.targetOrdinals
-      field.valuesInDomainOrder.zip(targets.iterator).foreach:
-        (value, target) =>
-          val next =
-            contribution(value)
-          accumulated(target) =
-            combine(accumulated(target), next)
-      Right(
-        IndexedField.tabulate(grouping.to)(point =>
-          accumulated(point.value)
-        )
-      )
+  ): Field[Y, M] =
+    foldMapByWith(grouping, field, FieldBuilder.vector)(empty)(
+      contribution
+    )(combine)
 
-  /** Fold one source contribution into every related target.
-    *
-    * Sources with an empty relation row are not evaluated. For each target,
-    * contributions are combined in increasing source-domain order. `empty` is
-    * evaluated independently for every target point.
-    */
-  def foldMapBy[X, FX, Y, A, M](
-      grouping: Relation[X, Y],
-      field: IndexedField[FX, A]
+  def foldMapByWith[X, Y, A, M](
+      grouping: TotalMap[X, Y],
+      field: Field[X, A],
+      builder: FieldBuilder
   )(
       empty: => M
   )(
       contribution: A => M
   )(
       combine: (M, M) => M
-  ): Either[SpaceMismatch, IndexedField[Y, M]] =
-    if !grouping.from.sameRuntimeOwnerAs(field.space) then
-      Left(
-        SpaceMismatch(
-          grouping.from.record,
-          field.space.record,
-          grouping.from.samePersistentIdentityAs(field.space)
-        )
+  ): Field[Y, M] =
+    val accumulated =
+      freshAccumulators(grouping.to.size, empty)
+    grouping.foreachMapping: (source, target) =>
+      accumulated(target.ordinal) = combine(
+        accumulated(target.ordinal),
+        contribution(field(source))
       )
-    else
-      val accumulated =
-        freshAccumulators(grouping.to.size, empty)
-      val rows = grouping.ordinalRows
-      field.valuesInDomainOrder.zip(rows.iterator).foreach:
-        (value, targets) =>
-          if targets.nonEmpty then
-            val next =
-              contribution(value)
-            var targetIndex = 0
-            while targetIndex < targets.length do
-              val target = targets(targetIndex)
-              accumulated(target) =
-                combine(accumulated(target), next)
-              targetIndex += 1
-      Right(
-        IndexedField.tabulate(grouping.to)(point =>
-          accumulated(point.value)
-        )
-      )
+    builder.tabulate(grouping.to)(index => accumulated(index.ordinal))
+
+  def foldMapByChecked[X, FX, Y, A, M](
+      grouping: TotalMap[X, Y],
+      field: Field[FX, A]
+  )(
+      empty: => M
+  )(
+      contribution: A => M
+  )(
+      combine: (M, M) => M
+  ): Either[SpaceMismatch, Field[Y, M]] =
+    if grouping.from.sameRuntimeOwnerAs(field.space) then
+      grouping.from.align(field.space) match
+        case Right(alignment) =>
+          Right(
+            foldMapBy(
+              grouping,
+              field.rebind(alignment.reverse)
+            )(empty)(contribution)(combine)
+          )
+        case Left(_) =>
+          Left(grouping.from.mismatch(field.space))
+    else Left(grouping.from.mismatch(field.space))
+
+  def foldMapBy[X, Y, A, M](
+      grouping: Relation[X, Y],
+      field: Field[X, A]
+  )(
+      empty: => M
+  )(
+      contribution: A => M
+  )(
+      combine: (M, M) => M
+  ): Field[Y, M] =
+    foldMapByWith(grouping, field, FieldBuilder.vector)(empty)(
+      contribution
+    )(combine)
+
+  def foldMapByWith[X, Y, A, M](
+      grouping: Relation[X, Y],
+      field: Field[X, A],
+      builder: FieldBuilder
+  )(
+      empty: => M
+  )(
+      contribution: A => M
+  )(
+      combine: (M, M) => M
+  ): Field[Y, M] =
+    val accumulated =
+      freshAccumulators(grouping.to.size, empty)
+    grouping.from.foreachIndex: source =>
+      if grouping.hasTargets(source) then
+        val contributionValue = contribution(field(source))
+        grouping.foreachTarget(source): target =>
+          accumulated(target.ordinal) = combine(
+            accumulated(target.ordinal),
+            contributionValue
+          )
+    builder.tabulate(grouping.to)(index => accumulated(index.ordinal))
+
+  def foldMapByChecked[X, FX, Y, A, M](
+      grouping: Relation[X, Y],
+      field: Field[FX, A]
+  )(
+      empty: => M
+  )(
+      contribution: A => M
+  )(
+      combine: (M, M) => M
+  ): Either[SpaceMismatch, Field[Y, M]] =
+    if grouping.from.sameRuntimeOwnerAs(field.space) then
+      grouping.from.align(field.space) match
+        case Right(alignment) =>
+          Right(
+            foldMapBy(
+              grouping,
+              field.rebind(alignment.reverse)
+            )(empty)(contribution)(combine)
+          )
+        case Left(_) =>
+          Left(grouping.from.mismatch(field.space))
+    else Left(grouping.from.mismatch(field.space))
+
+  /** User-facing spelling for total-map pushforward. */
+  def pushForward[X, Y, A, M](
+      grouping: TotalMap[X, Y],
+      field: Field[X, A]
+  )(
+      empty: => M
+  )(
+      contribution: A => M
+  )(
+      combine: (M, M) => M
+  ): Field[Y, M] =
+    foldMapBy(grouping, field)(empty)(contribution)(combine)
+
+  /** User-facing spelling for relational pushforward. */
+  def pushForward[X, Y, A, M](
+      grouping: Relation[X, Y],
+      field: Field[X, A]
+  )(
+      empty: => M
+  )(
+      contribution: A => M
+  )(
+      combine: (M, M) => M
+  ): Field[Y, M] =
+    foldMapBy(grouping, field)(empty)(contribution)(combine)
 
   private def freshAccumulators[M](
       size: Int,

@@ -1,217 +1,295 @@
 package locus4s.data
 
 import locus4s.DomainAlignment
-import locus4s.FiniteSpace
-import locus4s.Point
-import locus4s.PointError
+import locus4s.FiniteDomain
+import locus4s.Index
 import locus4s.Region
 import locus4s.Selection
 import locus4s.SpaceMismatch
+import locus4s.TotalMap
 
-enum IndexedFieldError:
+enum FieldConstructionError:
   case WrongValueCount(expected: Int, actual: Int)
 
   def message: String =
     this match
       case WrongValueCount(expected, actual) =>
-        s"indexed field requires $expected values, found $actual"
+        s"field requires $expected values, found $actual"
 
-enum SectionLookupError:
-  case InvalidPoint(error: PointError)
-  case OutsideSupport(pointOrdinal: Int)
+/** Compatibility name for the former concrete field error. */
+type IndexedFieldError = FieldConstructionError
 
-  def message: String =
-    this match
-      case InvalidPoint(error) =>
-        error.message
-      case OutsideSupport(pointOrdinal) =>
-        s"point $pointOrdinal is outside the section support"
+object IndexedFieldError:
+  val WrongValueCount = FieldConstructionError.WrongValueCount
 
-enum SectionSelectionError:
-  case WrongSpace(error: SpaceMismatch)
-  case OutsideSupport(pointOrdinal: Int)
+/** Representation-neutral values indexed by one finite domain.
+  *
+  * Implementations may own vectors, primitive arrays, mapped/chunked storage,
+  * JavaScript typed arrays, or non-owning views. Typed lookup is total and O(1)
+  * whenever the implementation advertises constant indexed access.
+  */
+trait Field[S, +A]:
+  def space: FiniteDomain[S]
 
-  def message: String =
-    this match
-      case WrongSpace(error) =>
-        error.message
-      case OutsideSupport(pointOrdinal) =>
-        s"selection point $pointOrdinal is outside the section support"
+  def apply(index: Index[S]): A
 
-/** A strict immutable value at every point of one live finite domain. */
-final class IndexedField[S, +A] private (
-    val space: FiniteSpace[S],
-    private val ownedValues: Vector[A]
-):
-  def at(point: Point[S]): Either[PointError, A] =
-    if space.contains(point) then Right(ownedValues(point.value))
-    else
-      Left(PointError.ForeignDomain(space.record, point.domain))
+  /** Compatibility spelling for total typed lookup. */
+  final def at(index: Index[S]): A =
+    apply(index)
+
+  def foreachValue(f: A => Unit): Unit =
+    space.foreachIndex(index => f(apply(index)))
+
+  def foreachValueWithOrdinal(f: (Int, A) => Unit): Unit =
+    space.foreachIndex(index => f(index.ordinal, apply(index)))
 
   def valuesInDomainOrder: Iterator[A] =
-    ownedValues.iterator
+    space.indices.map(apply)
 
   def toVector: Vector[A] =
-    ownedValues
+    valuesInDomainOrder.toVector
 
-  def map[B](f: A => B): IndexedField[S, B] =
-    IndexedField.fromOwned(space, ownedValues.map(f))
+  /** Lazy representation-neutral map; construction is O(1). */
+  def map[B](f: A => B): Field[S, B] =
+    Field.view(space)(index => f(apply(index)))
 
-  def zipWith[T, B, C](
-      that: IndexedField[T, B]
+  def zipWith[B, C](
+      that: Field[S, B]
+  )(combine: (A, B) => C): Field[S, C] =
+    Field.view(space): index =>
+      combine(apply(index), that(index))
+
+  def zipWithChecked[T, B, C](
+      that: Field[T, B]
   )(
       combine: (A, B) => C
-  ): Either[SpaceMismatch, IndexedField[S, C]] =
+  ): Either[SpaceMismatch, Field[S, C]] =
     if space.sameRuntimeOwnerAs(that.space) then
-      Right(
-        IndexedField.fromOwned(
-          space,
-          ownedValues
-            .zip(that.ownedValues)
-            .map((left, right) => combine(left, right))
-        )
-      )
-    else Left(mismatch(that.space))
+      space.align(that.space) match
+        case Right(alignment) =>
+          Right(zipWith(that.rebind(alignment.reverse))(combine))
+        case Left(_) =>
+          Left(space.mismatch(that.space))
+    else Left(space.mismatch(that.space))
 
-  def restrict[T](
+  /** Contravariant action of a total map. Construction is an O(1) view. */
+  def pullback[X](mapping: TotalMap[X, S]): Field[X, A] =
+    Field.view(mapping.from)(index => apply(mapping(index)))
+
+  def gather(selection: Selection[S]): Field[selection.I, A] =
+    pullback(selection.embedding.toTotalMap)
+
+  def restrict(region: Region[S]): SectionView[S, A] =
+    SectionView.create(this, region)
+
+  def restrictChecked[T](
       region: Region[T]
-  ): Either[SpaceMismatch, Section[S, A]] =
-    Section.create(this, region)
+  ): Either[SpaceMismatch, SectionView[S, A]] =
+    if space.sameRuntimeOwnerAs(region.space) then
+      space.align(region.space) match
+        case Right(alignment) =>
+          Right(
+            SectionView.create(
+              this,
+              alignment.reverse.transport(region)
+            )
+          )
+        case Left(_) =>
+          Left(space.mismatch(region.space))
+    else Left(space.mismatch(region.space))
 
-  /** Rebind through explicit checked persistent-domain evidence.
-    *
-    * The immutable values are shared; only their live domain owner changes.
-    */
+  /** O(1) owner transport. Concrete owners may override to share raw storage. */
   def rebind[T](
       alignment: DomainAlignment[S, T]
-  ): Either[SpaceMismatch, IndexedField[T, A]] =
-    if space.sameRuntimeOwnerAs(alignment.left) then
-      Right(IndexedField.fromOwned(alignment.right, ownedValues))
-    else Left(mismatch(alignment.left))
+  ): Field[T, A] =
+    Field.view(alignment.right): index =>
+      apply(alignment.toLeft(index))
 
-  private def mismatch[T](
-      actual: FiniteSpace[T]
-  ): SpaceMismatch =
-    SpaceMismatch(
-      space.record,
-      actual.record,
-      space.samePersistentIdentityAs(actual)
-    )
+object Field:
+  def view[S, A](
+      space: FiniteDomain[S]
+  )(valueAt: Index[S] => A): Field[S, A] =
+    new FieldView(space, valueAt)
+
+  private final class FieldView[S, A](
+      val space: FiniteDomain[S],
+      valueAt: Index[S] => A
+  ) extends Field[S, A]:
+    def apply(index: Index[S]): A =
+      valueAt(index)
+
+/** Strict immutable reference implementation backed by `Vector`. */
+final class VectorField[S, +A] private (
+    val space: FiniteDomain[S],
+    private val ownedValues: Vector[A]
+) extends Field[S, A]:
+  def apply(index: Index[S]): A =
+    ownedValues(index.ordinal)
+
+  override def foreachValue(f: A => Unit): Unit =
+    ownedValues.foreach(f)
+
+  override def foreachValueWithOrdinal(f: (Int, A) => Unit): Unit =
+    var ordinal = 0
+    while ordinal < ownedValues.length do
+      f(ordinal, ownedValues(ordinal))
+      ordinal += 1
+
+  override def valuesInDomainOrder: Iterator[A] =
+    ownedValues.iterator
+
+  override def toVector: Vector[A] =
+    ownedValues
+
+  override def rebind[T](
+      alignment: DomainAlignment[S, T]
+  ): VectorField[T, A] =
+    new VectorField(alignment.right, ownedValues)
+
+object VectorField:
+  def fromValues[S, A](
+      space: FiniteDomain[S],
+      values: IterableOnce[A]
+  ): Either[FieldConstructionError, VectorField[S, A]] =
+    val copied = values.iterator.toVector
+    if copied.length == space.size then Right(fromOwned(space, copied))
+    else
+      Left(
+        FieldConstructionError.WrongValueCount(
+          space.size,
+          copied.length
+        )
+      )
+
+  def tabulate[S, A](
+      space: FiniteDomain[S]
+  )(valueAt: Index[S] => A): VectorField[S, A] =
+    val builder = Vector.newBuilder[A]
+    builder.sizeHint(space.size)
+    space.foreachIndex(index => builder += valueAt(index))
+    fromOwned(space, builder.result())
+
+  private def fromOwned[S, A](
+      space: FiniteDomain[S],
+      values: Vector[A]
+  ): VectorField[S, A] =
+    new VectorField(space, values)
+
+/** Compatibility alias for the former concrete storage contract. */
+type IndexedField[S, A] = VectorField[S, A]
 
 object IndexedField:
   def fromValues[S, A](
-      space: FiniteSpace[S],
+      space: FiniteDomain[S],
       values: IterableOnce[A]
-  ): Either[IndexedFieldError, IndexedField[S, A]] =
-    val copied = values.iterator.toVector
-    if copied.length == space.size then
-      Right(fromOwned(space, copied))
-    else
-      Left(
-        IndexedFieldError.WrongValueCount(space.size, copied.length)
-      )
+  ): Either[FieldConstructionError, VectorField[S, A]] =
+    VectorField.fromValues(space, values)
 
-  /** Evaluates `valueAt` exactly once per point, in domain order. */
   def tabulate[S, A](
-      space: FiniteSpace[S]
-  )(
-      valueAt: Point[S] => A
-  ): IndexedField[S, A] =
-    fromOwned(space, space.points.map(valueAt).toVector)
+      space: FiniteDomain[S]
+  )(valueAt: Index[S] => A): VectorField[S, A] =
+    VectorField.tabulate(space)(valueAt)
 
-  private def fromOwned[S, A](
-      space: FiniteSpace[S],
-      values: Vector[A]
-  ): IndexedField[S, A] =
-    new IndexedField(space, values)
+/** Destination policy for algorithms that materialize fields. */
+trait FieldBuilder:
+  def tabulate[S, A](
+      space: FiniteDomain[S]
+  )(valueAt: Index[S] => A): Field[S, A]
 
-/** An indexed field restricted to an immutable finite-domain region. */
-final class Section[S, +A] private (
-    val field: IndexedField[S, A],
+object FieldBuilder:
+  val vector: FieldBuilder =
+    new FieldBuilder:
+      def tabulate[S, A](
+          space: FiniteDomain[S]
+      )(valueAt: Index[S] => A): Field[S, A] =
+        VectorField.tabulate(space)(valueAt)
+
+enum SectionLookupError:
+  case OutsideSupport(pointOrdinal: Int)
+
+  def message: String =
+    this match
+      case OutsideSupport(pointOrdinal) =>
+        s"index $pointOrdinal is outside the section support"
+
+enum SectionSelectionError:
+  case OutsideSupport(pointOrdinal: Int)
+
+  def message: String =
+    this match
+      case OutsideSupport(pointOrdinal) =>
+        s"selection index $pointOrdinal is outside the section support"
+
+/** A non-owning field view restricted to a Region support. */
+final class SectionView[S, +A] private (
+    val field: Field[S, A],
     val support: Region[S]
 ):
-  def at(point: Point[S]): Either[SectionLookupError, A] =
-    field
-      .at(point)
-      .left
-      .map(SectionLookupError.InvalidPoint.apply)
-      .flatMap: value =>
-        if support.contains(point) then Right(value)
-        else Left(SectionLookupError.OutsideSupport(point.value))
+  def apply(index: Index[S]): Either[SectionLookupError, A] =
+    if support.contains(index) then Right(field(index))
+    else Left(SectionLookupError.OutsideSupport(index.ordinal))
 
-  def map[B](f: A => B): Section[S, B] =
-    new Section(field.map(f), support)
+  /** Compatibility spelling for section lookup. */
+  def at(index: Index[S]): Either[SectionLookupError, A] =
+    apply(index)
 
-  def restrict[T](
-      region: Region[T]
-  ): Either[SpaceMismatch, Section[S, A]] =
-    for
-      candidate <- Section.create(field, region)
-      intersection <- support.intersect(candidate.support)
-    yield new Section(field, intersection)
+  /** O(1) mapped view; the underlying full field is not eagerly mapped. */
+  def map[B](f: A => B): SectionView[S, B] =
+    new SectionView(field.map(f), support)
+
+  def restrict(region: Region[S]): SectionView[S, A] =
+    new SectionView(field, support.intersect(region))
 
   def valuesInDomainOrder: Iterator[A] =
-    val values = field.toVector
-    support.pointsInDomainOrder.map(point => values(point.value))
+    support.indicesInDomainOrder.map(field.apply)
 
-  def valuesIn[T](
-      selection: Selection[T]
-  ): Either[SectionSelectionError, Vector[A]] =
-    if !field.space.sameRuntimeOwnerAs(selection.space) then
-      Left(
-        SectionSelectionError.WrongSpace(
-          SpaceMismatch(
-            field.space.record,
-            selection.space.record,
-            field.space.samePersistentIdentityAs(selection.space)
-          )
-        )
-      )
-    else
-      val ordinals = selection.ordinals
-      val supportOrdinals = support.ordinalsInDomainOrder.toSet
-      ordinals.find(ordinal => !supportOrdinals.contains(ordinal)) match
-        case Some(ordinal) =>
-          Left(SectionSelectionError.OutsideSupport(ordinal))
-        case None =>
-          val values = field.toVector
-          Right(
-            ordinals.iterator
-              .map(values)
-              .toVector
-          )
+  def gather(
+      selection: Selection[S]
+  ): Either[SectionSelectionError, Field[selection.I, A]] =
+    val outside =
+      selection.positions.indices
+        .map(selection.apply)
+        .find(index => !support.contains(index))
+    outside match
+      case Some(index) =>
+        Left(SectionSelectionError.OutsideSupport(index.ordinal))
+      case None =>
+        Right(field.gather(selection))
+
+  /** Compatibility spelling retaining the selection position domain. */
+  def valuesIn(
+      selection: Selection[S]
+  ): Either[SectionSelectionError, Field[selection.I, A]] =
+    gather(selection)
 
   def rebind[T](
       alignment: DomainAlignment[S, T]
-  ): Either[SpaceMismatch, Section[T, A]] =
-    for
-      reboundField <- field.rebind(alignment)
-      reboundSupport <- support.rebind(alignment)
-    yield new Section(reboundField, reboundSupport)
+  ): SectionView[T, A] =
+    new SectionView(
+      field.rebind(alignment),
+      support.rebind(alignment)
+    )
+
+object SectionView:
+  def create[S, A](
+      field: Field[S, A],
+      support: Region[S]
+  ): SectionView[S, A] =
+    new SectionView(field, support)
+
+/** Compatibility name for section views. */
+type Section[S, A] = SectionView[S, A]
 
 object Section:
-  def create[S, T, A](
-      field: IndexedField[S, A],
-      support: Region[T]
-  ): Either[SpaceMismatch, Section[S, A]] =
-    if !field.space.sameRuntimeOwnerAs(support.space) then
-      Left(
-        SpaceMismatch(
-          field.space.record,
-          support.space.record,
-          field.space.samePersistentIdentityAs(support.space)
-        )
-      )
-    else
-      field.space
-        .align(support.space)
-        .left
-        .map(error =>
-          SpaceMismatch(
-            error.left,
-            error.right,
-            error.left == error.right
-          )
-        )
-        .flatMap(_.regionToLeft(support))
-        .map(rebound => new Section(field, rebound))
+  def create[S, A](
+      field: Field[S, A],
+      support: Region[S]
+  ): SectionView[S, A] =
+    SectionView.create(field, support)
+
+extension [A, B](alignment: DomainAlignment[A, B])
+  def transport[C](field: Field[A, C]): Field[B, C] =
+    field.rebind(alignment)
+
+  def transport[C](section: SectionView[A, C]): SectionView[B, C] =
+    section.rebind(alignment)
