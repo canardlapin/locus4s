@@ -112,6 +112,18 @@ sealed abstract class FiniteDomain[S] private[locus4s] (
         s"validated structure contained ordinal $ordinal outside [0, $size)"
       )
 
+  /** Allocation-free ordinal conversion for a downstream compiled structure.
+    *
+    * Use `index` at an untrusted dynamic boundary. This method is for an immutable
+    * structure that already proved the ordinal lies in this exact domain during its own
+    * construction. An invariant violation throws instead of returning a checked
+    * wrapper, so hot traversal does not allocate one wrapper per emitted index.
+    */
+  final inline def indexAtValidatedOrdinal(
+      ordinal: Int
+  ): Index[S] =
+    indexAtOrdinal(ordinal)
+
   private[locus4s] final def mismatch[T](
       actual: FiniteDomain[T]
   ): SpaceMismatch =

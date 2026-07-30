@@ -65,6 +65,43 @@ final class JvmAllocationCourtSuite extends munit.FunSuite:
       s"2,000,000 typed map/array lookups allocated $allocated bytes"
     )
 
+  test("validated ordinal recovery allocates no checked wrapper"):
+    val space = ephemeral("jvm-validated-ordinal", 100_000)
+    val (checksum, allocated) = validatedOrdinalAllocation(space)
+
+    assertEquals(
+      checksum,
+      70L * 100_000L * 99_999L / 2L
+    )
+    assert(
+      allocated <= 4_096L,
+      s"2,000,000 validated ordinal recoveries allocated $allocated bytes"
+    )
+
+  private def validatedOrdinalAllocation[S](
+      space: FiniteDomain[S]
+  ): (Long, Long) =
+    var checksum = 0L
+
+    def readPass(): Unit =
+      var ordinal = 0
+      while ordinal < space.size do
+        checksum += space.indexAtValidatedOrdinal(ordinal).ordinal.toLong
+        ordinal += 1
+
+    var warmup = 0
+    while warmup < 50 do
+      readPass()
+      warmup += 1
+
+    val allocated = allocatedBytes:
+      var pass = 0
+      while pass < 20 do
+        readPass()
+        pass += 1
+
+    (checksum, allocated)
+
   private def allocatedBytes(body: => Unit): Long =
     ManagementFactory.getThreadMXBean match
       case bean: com.sun.management.ThreadMXBean
