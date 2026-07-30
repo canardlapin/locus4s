@@ -48,6 +48,18 @@ lazy val locus4sLaws =
   locusProject("locus4s-laws")
     .dependsOn(locus4sCore, locus4sData)
 
+lazy val docs =
+  project
+    .in(file("site"))
+    .dependsOn(locus4sCore.jvm, locus4sData.jvm, locus4sLaws.jvm)
+    .enablePlugins(TypelevelSitePlugin)
+    .settings(
+      name := "locus4s-docs",
+      description := "Executable Scala guide and reference documentation for locus4s.",
+      publish / skip := true,
+      mdocExtraArguments += "--no-link-hygiene"
+    )
+
 lazy val root =
   project
     .in(file("."))
@@ -57,7 +69,8 @@ lazy val root =
       locus4sData.jvm,
       locus4sData.js,
       locus4sLaws.jvm,
-      locus4sLaws.js
+      locus4sLaws.js,
+      docs
     )
     .settings(
       name := "locus4s-root",
@@ -76,4 +89,11 @@ addCommandAlias(
 addCommandAlias(
   "checkAll",
   ";scalafmtCheckAll;scalafmtSbtCheck;compileAll;testAll"
+)
+addCommandAlias(
+  "docsCheck",
+  ";locus4s-coreJVM/doc;" +
+    "locus4s-dataJVM/doc;" +
+    "locus4s-lawsJVM/doc;" +
+    "docs/tlSite"
 )
