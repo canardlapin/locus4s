@@ -68,6 +68,32 @@ final class PerformanceContractsSuite extends munit.FunSuite:
       Left(RelationError.RowOffsetCountOverflow(Int.MaxValue))
     )
 
+  test("fiber materialization handles the CSR row-offset limit explicitly"):
+    val source = ephemeral("fiber-limit-source", 2)
+    val hugeTarget = ephemeral("fiber-limit-target", Int.MaxValue)
+    val emptyMapping =
+      mustRight(
+        PartialMap.fromOptionalTargetOrdinals(
+          source,
+          hugeTarget,
+          Vector(None, None)
+        )
+      )
+    val definedMapping =
+      mustRight(
+        PartialMap.fromOptionalTargetOrdinals(
+          source,
+          hugeTarget,
+          Vector(Some(1), None)
+        )
+      )
+
+    assert(mustRight(emptyMapping.fibers).isEmpty)
+    assertEquals(
+      definedMapping.fibers,
+      Left(RelationError.RowOffsetCountOverflow(Int.MaxValue))
+    )
+
   test("zero-cost index traversal preserves ordinal parity"):
     val size = 2_000_000
     val space = ephemeral("traversal-court", size)

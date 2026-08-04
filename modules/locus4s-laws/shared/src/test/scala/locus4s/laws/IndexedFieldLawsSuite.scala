@@ -166,6 +166,30 @@ final class IndexedFieldLawsSuite extends ScalaCheckSuite:
 
       assert(PartialMapLaws.compositionAssociativity(first, second, third))
 
+  property(
+    "partial aggregation matches a sparse order-sensitive reference model"
+  ):
+    forAll(partialAggregationCase): (sourceSize, targetSize, targetOrdinals, values) =>
+      val source =
+        restored(s"partial-aggregation-source-$sourceSize", sourceSize).space
+      val target =
+        restored(s"partial-aggregation-target-$targetSize", targetSize).space
+      val grouping =
+        mustRight(
+          PartialMap.fromOptionalTargetOrdinals(
+            source,
+            target,
+            targetOrdinals
+          )
+        )
+      val field = mustRight(VectorField.fromValues(source, values))
+
+      assert(
+        AggregationLaws.partialMapReference(grouping, field)(
+          Vector.empty[Int]
+        )(Vector(_))(_ ++ _)(_ == _)
+      )
+
   test("alignment and persistence reusable laws round-trip"):
     val record =
       mustRight(DomainRecord.parse("law-persistence", "first", 5))
@@ -445,6 +469,22 @@ final class IndexedFieldLawsSuite extends ScalaCheckSuite:
           second <- partialTargets(size)
           third <- partialTargets(size)
         yield (size, first, second, third)
+
+  private val partialAggregationCase =
+    for
+      sourceSize <- Gen.choose(0, 12)
+      targetSize <- Gen.choose(0, 6)
+      targetOrdinals <-
+        if targetSize == 0 then Gen.const(Vector.fill(sourceSize)(Option.empty[Int]))
+        else
+          Gen
+            .listOfN(
+              sourceSize,
+              Gen.option(Gen.choose(0, targetSize - 1))
+            )
+            .map(_.toVector)
+      values <- Gen.listOfN(sourceSize, Gen.choose(-1000, 1000))
+    yield (sourceSize, targetSize, targetOrdinals, values.toVector)
 
   private def boundedList(size: Int): Gen[Vector[Int]] =
     if size == 0 then Gen.const(Vector.empty)

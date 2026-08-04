@@ -154,6 +154,27 @@ final class LocusCorePropertiesSuite extends ScalaCheckSuite:
           ordinals(position.ordinal)
         )
 
+  property("PartialMap fibers partition support and match its graph"):
+    forAll(partialMapCase): (sourceSize, targetSize, targets) =>
+      val source = restored(s"partial-source-$sourceSize", sourceSize).space
+      val target = restored(s"partial-target-$targetSize", targetSize).space
+      val mapping =
+        mustRight(
+          PartialMap.fromOptionalTargetOrdinals(source, target, targets)
+        )
+      val graph = mustRight(mapping.toRelation)
+      val fibers = mustRight(mapping.fibers)
+      val fiberUnion = fibers.image(Region.whole(target))
+
+      assertEquals(fiberUnion, mapping.definedRegion)
+      assertEquals(fibers.converse, graph)
+      target.foreachIndex: left =>
+        target.foreachIndex: right =>
+          if left != right then
+            assert(
+              fibers.row(left).intersect(fibers.row(right)).isEmpty
+            )
+
   test("empty and whole Region use canonical edge semantics"):
     val emptySpace = restored("empty", 0).space
     val singleton = restored("singleton", 1).space
@@ -236,6 +257,21 @@ final class LocusCorePropertiesSuite extends ScalaCheckSuite:
             Gen
               .pick(selected, (0 until size).toVector)
               .map(values => (size, values.toVector))
+
+  private val partialMapCase =
+    for
+      sourceSize <- Gen.choose(0, 20)
+      targetSize <- Gen.choose(0, 8)
+      targets <-
+        if targetSize == 0 then Gen.const(Vector.fill(sourceSize)(Option.empty[Int]))
+        else
+          Gen
+            .listOfN(
+              sourceSize,
+              Gen.option(Gen.choose(0, targetSize - 1))
+            )
+            .map(_.toVector)
+    yield (sourceSize, targetSize, targets)
 
   private def boundedList(size: Int): Gen[Vector[Int]] =
     if size == 0 then Gen.const(Vector.empty)

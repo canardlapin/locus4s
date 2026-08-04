@@ -1,5 +1,7 @@
 package locus4s
 
+import scala.collection.mutable
+
 enum PartialMapError:
   case WrongTargetCount(expected: Int, actual: Int)
   case TargetOutOfBounds(
@@ -35,6 +37,79 @@ final class PartialMap[X, Y] private (
 
   def definedRegion: Region[X] =
     Region.tabulate(from)(isDefinedAt)
+
+  /** Sources that map to `target`. Each call scans the source and allocates a Region.
+    */
+  def preimage(target: Index[Y]): Region[X] =
+    Region.tabulate(from): source =>
+      targets(source.ordinal) == target.ordinal
+
+  /** The defined graph, oriented from sources to targets.
+    *
+    * Materialization scans the source once and allocates fresh CSR storage. A non-empty
+    * graph whose source has `Int.MaxValue` rows reports the Relation representation
+    * limit instead of overflowing its row-offset count.
+    */
+  def toRelation: Either[RelationError, Relation[X, Y]] =
+    if from.size == Int.MaxValue then
+      Left(RelationError.RowOffsetCountOverflow(from.size))
+    else
+      val offsets = Array.ofDim[Int](from.size + 1)
+      val output = Array.newBuilder[Int]
+      var pairCount = 0
+      var source = 0
+      while source < from.size do
+        val target = targets(source)
+        if target != PartialMap.Undefined then
+          output += target
+          pairCount += 1
+        offsets(source + 1) = pairCount
+        source += 1
+      Relation.fromCsr(from, to, offsets, output.result())
+
+  /** All fibers, oriented from targets to their source members.
+    *
+    * This operation scans the PartialMap source once. It allocates one temporary bucket
+    * per non-empty fiber and a fresh `Relation[Y, X]`; it never rescans the source once
+    * for each target. Total work is O(|X| + |Y|).
+    */
+  def fibers: Either[RelationError, Relation[Y, X]] =
+    if to.size == Int.MaxValue then
+      var source = 0
+      var hasDefinedTarget = false
+      while source < from.size && !hasDefinedTarget do
+        hasDefinedTarget = targets(source) != PartialMap.Undefined
+        source += 1
+      if hasDefinedTarget then Left(RelationError.RowOffsetCountOverflow(to.size))
+      else Right(Relation.empty(to, from))
+    else
+      val rows = Array.fill[mutable.ArrayBuffer[Int] | Null](to.size)(null)
+      var source = 0
+      while source < from.size do
+        val target = targets(source)
+        if target != PartialMap.Undefined then
+          val existing = rows(target)
+          val row =
+            if existing == null then
+              val created = mutable.ArrayBuffer.empty[Int]
+              rows(target) = created
+              created
+            else existing
+          row += source
+        source += 1
+
+      val offsets = Array.ofDim[Int](to.size + 1)
+      val output = Array.newBuilder[Int]
+      var pairCount = 0
+      var target = 0
+      while target < to.size do
+        val row = rows(target)
+        if row != null then
+          output ++= row
+          pairCount += row.size
+        offsets(target + 1) = pairCount
+        target += 1
+      Relation.fromCsr(to, from, offsets, output.result())
 
   def foreachDefined(f: (Index[X], Index[Y]) => Unit): Unit =
     from.foreachIndex: source =>

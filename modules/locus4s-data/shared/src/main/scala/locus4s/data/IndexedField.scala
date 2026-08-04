@@ -17,8 +17,10 @@ enum FieldConstructionError:
         s"field requires $expected values, found $actual"
 
 /** Compatibility name for the former concrete field error. */
+@deprecated("Use FieldConstructionError; scheduled for removal in 1.0.", "0.1.0")
 type IndexedFieldError = FieldConstructionError
 
+@deprecated("Use FieldConstructionError; scheduled for removal in 1.0.", "0.1.0")
 object IndexedFieldError:
   val WrongValueCount = FieldConstructionError.WrongValueCount
 
@@ -34,6 +36,7 @@ trait Field[S, +A]:
   def apply(index: Index[S]): A
 
   /** Compatibility spelling for total typed lookup. */
+  @deprecated("Use apply; scheduled for removal in 1.0.", "0.1.0")
   final def at(index: Index[S]): A =
     apply(index)
 
@@ -176,8 +179,10 @@ object VectorField:
     new VectorField(space, values)
 
 /** Compatibility alias for the former concrete storage contract. */
+@deprecated("Use Field or VectorField; scheduled for removal in 1.0.", "0.1.0")
 type IndexedField[S, A] = VectorField[S, A]
 
+@deprecated("Use VectorField; scheduled for removal in 1.0.", "0.1.0")
 object IndexedField:
   def fromValues[S, A](
       space: FiniteDomain[S],
@@ -230,6 +235,7 @@ final class SectionView[S, +A] private (
     else Left(SectionLookupError.OutsideSupport(index.ordinal))
 
   /** Compatibility spelling for section lookup. */
+  @deprecated("Use apply; scheduled for removal in 1.0.", "0.1.0")
   def at(index: Index[S]): Either[SectionLookupError, A] =
     apply(index)
 
@@ -257,6 +263,7 @@ final class SectionView[S, +A] private (
         Right(field.gather(selection))
 
   /** Compatibility spelling retaining the selection position domain. */
+  @deprecated("Use gather; scheduled for removal in 1.0.", "0.1.0")
   def valuesIn(
       selection: Selection[S]
   ): Either[SectionSelectionError, Field[selection.I, A]] =

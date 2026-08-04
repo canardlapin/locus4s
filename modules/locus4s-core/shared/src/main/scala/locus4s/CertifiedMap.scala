@@ -247,6 +247,59 @@ final class PartialSurjection[X, Y] private (
   def apply(index: Index[X]): Option[Index[Y]] =
     toPartialMap(index)
 
+  /** The defined source region. Materialization is O(|X|). */
+  def support: Region[X] =
+    toPartialMap.definedRegion
+
+  /** The non-empty fiber over `target`.
+    *
+    * Surjectivity guarantees that the returned Region is non-empty. Each call scans the
+    * source and allocates a Region; use `fibers` to materialize all fibers at once.
+    */
+  def fiber(target: Index[Y]): Region[X] =
+    toPartialMap.preimage(target)
+
+  /** All non-empty fibers in target-domain order. See PartialMap.fibers. */
+  def fibers: Either[RelationError, Relation[Y, X]] =
+    toPartialMap.fibers
+
+  /** The defined graph, oriented from sources to targets. */
+  def toRelation: Either[RelationError, Relation[X, Y]] =
+    toPartialMap.toRelation
+
+  /** Composition with a total surjection preserves this map's support. */
+  def andThen[Z](that: Surjection[Y, Z]): PartialSurjection[X, Z] =
+    new PartialSurjection(toPartialMap.andThen(that.toTotalMap))
+
+  /** Composition with a partial surjection preserves certified target coverage.
+    *
+    * The result support contains exactly the sources whose intermediate target lies in
+    * `that.support`; it equals this support when `that.support` is its whole source.
+    */
+  def andThen[Z](
+      that: PartialSurjection[Y, Z]
+  ): PartialSurjection[X, Z] =
+    new PartialSurjection(toPartialMap.andThen(that.toPartialMap))
+
+  /** Compare source partitions while ignoring target labels.
+    *
+    * This checked form requires the exact same live source owner. Target owners and
+    * target Scala types may differ because the comparison derives a bijection between
+    * observed target ordinals rather than comparing the ordinals themselves.
+    */
+  def equivalentUpToTargetRelabelingChecked[A, B](
+      that: PartialSurjection[A, B]
+  ): Either[SpaceMismatch, Boolean] =
+    if from.sameRuntimeOwnerAs(that.from) then Right(equivalentBySourceOrdinal(that))
+    else Left(from.mismatch(that.from))
+
+  /** Compare source partitions after explicit source-domain alignment. */
+  def equivalentUpToTargetRelabelingAligned[A, B](
+      that: PartialSurjection[A, B],
+      sourceAlignment: DomainAlignment[X, A]
+  ): Boolean =
+    equivalentBySourceOrdinal(that.rebindFrom(sourceAlignment.reverse))
+
   def rebindFrom[A](
       alignment: DomainAlignment[X, A]
   ): PartialSurjection[A, Y] =
@@ -256,6 +309,35 @@ final class PartialSurjection[X, Y] private (
       alignment: DomainAlignment[Y, B]
   ): PartialSurjection[X, B] =
     new PartialSurjection(toPartialMap.rebindTo(alignment))
+
+  private def equivalentBySourceOrdinal[A, B](
+      that: PartialSurjection[A, B]
+  ): Boolean =
+    if from.size != that.from.size || to.size != that.to.size then false
+    else
+      val rightByLeft = Array.fill(to.size)(-1)
+      val leftByRight = Array.fill(that.to.size)(-1)
+      var source = 0
+      var equivalent = true
+      while source < from.size && equivalent do
+        val leftTarget = toPartialMap(from.indexAtValidatedOrdinal(source))
+        val rightTarget =
+          that.toPartialMap(that.from.indexAtValidatedOrdinal(source))
+        (leftTarget, rightTarget) match
+          case (None, None) =>
+            ()
+          case (Some(left), Some(right)) =>
+            val recordedRight = rightByLeft(left.ordinal)
+            val recordedLeft = leftByRight(right.ordinal)
+            if recordedRight == -1 && recordedLeft == -1 then
+              rightByLeft(left.ordinal) = right.ordinal
+              leftByRight(right.ordinal) = left.ordinal
+            else if recordedRight != right.ordinal || recordedLeft != left.ordinal
+            then equivalent = false
+          case _ =>
+            equivalent = false
+        source += 1
+      equivalent
 
   override def equals(other: Any): Boolean =
     other match
@@ -285,6 +367,68 @@ object PartialSurjection:
       val missing = reached.indexWhere(value => !value)
       if missing >= 0 then Left(CertifiedMapError.NotSurjective(missing))
       else Right(new PartialSurjection(mapping))
+
+  def fromOptionalTargetOrdinals[X, Y](
+      from: FiniteDomain[X],
+      to: FiniteDomain[Y],
+      targetOrdinals: IterableOnce[Option[Int]]
+  ): Either[PartialMapError | CertifiedMapError, PartialSurjection[X, Y]] =
+    PartialMap
+      .fromOptionalTargetOrdinals(from, to, targetOrdinals)
+      .flatMap(fromPartialMap)
+
+  /** Typed constructor for targets already known to belong to `to` by `Y`. */
+  def fromOptionalTargets[X, Y](
+      from: FiniteDomain[X],
+      to: FiniteDomain[Y],
+      targets: IterableOnce[Option[Index[Y]]]
+  ): Either[PartialMapError | CertifiedMapError, PartialSurjection[X, Y]] =
+    PartialMap
+      .fromOptionalTargets(from, to, targets)
+      .flatMap(fromPartialMap)
+
+  /** Dynamic-boundary constructor requiring the exact target runtime owner.
+    *
+    * Use `fromOptionalTargetsAligned` when the supplied owner is distinct but has a
+    * compatible persistent identity.
+    */
+  def fromOptionalTargetsChecked[X, Y, A](
+      from: FiniteDomain[X],
+      to: FiniteDomain[Y],
+      actualTargetOwner: FiniteDomain[A],
+      targets: IterableOnce[Option[Index[A]]]
+  ): Either[
+    PartialMapError | CertifiedMapError | SpaceMismatch,
+    PartialSurjection[X, Y]
+  ] =
+    if !to.sameRuntimeOwnerAs(actualTargetOwner) then
+      Left(to.mismatch(actualTargetOwner))
+    else
+      fromOptionalTargetOrdinals(
+        from,
+        to,
+        targets.iterator.map(_.map(_.ordinal))
+      )
+
+  def fromOptionalTargetsAligned[X, Y, A](
+      from: FiniteDomain[X],
+      to: FiniteDomain[Y],
+      targets: IterableOnce[Option[Index[A]]],
+      alignment: DomainAlignment[Y, A]
+  ): Either[PartialMapError | CertifiedMapError, PartialSurjection[X, Y]] =
+    fromOptionalTargetOrdinals(
+      from,
+      to,
+      targets.iterator.map(_.map(alignment.toLeft).map(_.ordinal))
+    )
+
+  def tabulate[X, Y](
+      from: FiniteDomain[X],
+      to: FiniteDomain[Y]
+  )(
+      mapping: Index[X] => Option[Index[Y]]
+  ): Either[CertifiedMapError, PartialSurjection[X, Y]] =
+    fromPartialMap(PartialMap.tabulate(from, to)(mapping))
 
 private object CertifiedMapValidation:
   def validateSurjective[X, Y](

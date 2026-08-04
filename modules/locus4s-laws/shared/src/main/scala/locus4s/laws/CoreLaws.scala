@@ -1,9 +1,11 @@
 package locus4s.laws
 
 import locus4s.Bijection
+import locus4s.CenteredNeighborhoodSystem
 import locus4s.DomainAlignment
 import locus4s.Index
 import locus4s.Injection
+import locus4s.NeighborhoodSystem
 import locus4s.PartialMap
 import locus4s.PartialSurjection
 import locus4s.Region
@@ -349,6 +351,36 @@ object SelectionLaws:
       ) &&
       selection.positions.indices.forall: position =>
         selection(position).ordinal == ordinals(position.ordinal)
+
+object NeighborhoodSystemLaws:
+  def endpointOwners[C, S](
+      neighborhoods: NeighborhoodSystem[C, S]
+  ): Boolean =
+    neighborhoods.centers.sameRuntimeOwnerAs(neighborhoods.membership.from) &&
+      neighborhoods.ambient.sameRuntimeOwnerAs(neighborhoods.membership.to)
+
+  def centerOrder[C, S](
+      neighborhoods: NeighborhoodSystem[C, S]
+  ): Boolean =
+    neighborhoods.centers.indices.forall: center =>
+      neighborhoods.center(center) == neighborhoods.centerEmbedding(center)
+
+  def centeredReflexivity[C, S](
+      neighborhoods: CenteredNeighborhoodSystem[C, S]
+  ): Boolean =
+    neighborhoods.centers.indices.forall: center =>
+      neighborhoods.membership.isRelated(center, neighborhoods.center(center))
+
+  def rebindRoundTrip[C, A, S, B](
+      neighborhoods: NeighborhoodSystem[C, S],
+      centerAlignment: DomainAlignment[C, A],
+      ambientAlignment: DomainAlignment[S, B]
+  ): Boolean =
+    neighborhoods
+      .rebindCenters(centerAlignment)
+      .rebindAmbient(ambientAlignment)
+      .rebindCenters(centerAlignment.reverse)
+      .rebindAmbient(ambientAlignment.reverse) == neighborhoods
 
 object CertifiedMapLaws:
   def injectionIsUnique[X, Y](injection: Injection[X, Y]): Boolean =

@@ -50,6 +50,10 @@ final class Region[S] private (
     ordinalIterator.map(space.indexAtOrdinal)
 
   /** Compatibility spelling for `indicesInDomainOrder`. */
+  @deprecated(
+    "Use indicesInDomainOrder; scheduled for removal in 1.0.",
+    "0.1.0"
+  )
   def pointsInDomainOrder: Iterator[Index[S]] =
     indicesInDomainOrder
 
@@ -352,6 +356,7 @@ object Region:
     )
 
   /** Compatibility spelling for `fromIndices`. */
+  @deprecated("Use fromIndices; scheduled for removal in 1.0.", "0.1.0")
   def fromPoints[S](
       space: FiniteDomain[S],
       points: IterableOnce[Index[S]]

@@ -30,3 +30,46 @@ even before a stable binary baseline:
 - indices are bounded, zero-cost ordinals;
 - fields do not prescribe storage;
 - geometry and imaging policy remain downstream.
+
+## Canonical names and compatibility spellings
+
+New APIs and documentation use `Index[S]` for a bounded typed ordinal and
+`Field[S, A]` for representation-neutral indexed values. `VectorField` names
+the supplied strict vector-backed implementation. Compatibility names do not
+define a second representation or a second ownership model.
+
+The following spellings are retained for the pre-1.0 series, deprecated by
+documentation now, and scheduled for removal at 1.0:
+
+| Compatibility spelling | Canonical spelling | Source consequence at 1.0 |
+|---|---|---|
+| `Point[S]` | `Index[S]` | change the type name; values keep the same opaque-`Int` representation |
+| `PointError` | `IndexError` | change the error type and constructor qualifier |
+| `domain.point` | `domain.index` | change the method name; the `Either` result is unchanged |
+| `domain.pointOption` | `domain.indexOption` | change the method name; the `Option` result is unchanged |
+| `domain.points` | `domain.indices` | change the iterator method name |
+| `region.pointsInDomainOrder` | `region.indicesInDomainOrder` | change the iterator method name |
+| `Region.fromPoints` and `Selection.fromPoints` | `fromIndices` | change the constructor name |
+| `IndexedField[S, A]` | `VectorField[S, A]`, or `Field[S, A]` at abstraction boundaries | choose whether the caller requires vector storage |
+| `IndexedFieldError` | `FieldConstructionError` | change the error type and constructor qualifier |
+| `at(index)` | `apply(index)` | replace `value.at(index)` with `value(index)` |
+| `Section.valuesIn` | `SectionView.gather` | change the method name; the compact position-domain result remains |
+
+These names carry Scala `@deprecated` annotations in the current snapshot, so
+downstream compilation identifies each migration site. No new locus4s API will
+use them, and their removal at 1.0 will be source-breaking. The aliases can
+remain until then without blocking ScalaFIM or another downstream library from
+adopting the canonical API.
+
+## Ownership checks and alignment
+
+A typed method whose arguments share one owner type is total. A method ending
+in `Checked` compares exact live owners and returns `SpaceMismatch` when they
+differ, even if their persistent keys match. A method ending in `Aligned`
+requires `DomainAlignment` evidence and permits independently restored owners
+whose persistent structural keys agree.
+
+Target-relabeling comparisons are a deliberate exception to target-owner
+equality: they compare the partition of an aligned source domain and derive a
+bijection between observed target fibers. They do not interpret equal target
+ordinals from distinct owners as equal labels.

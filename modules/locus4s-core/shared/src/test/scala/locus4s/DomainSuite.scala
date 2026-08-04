@@ -3,6 +3,17 @@ package locus4s
 import munit.FunSuite
 
 final class DomainSuite extends FunSuite:
+  test("validated structures can recover indices without a checked wrapper"):
+    val packed =
+      mustRight(FiniteDomain.ephemeral("validated ordinals", 3))
+    val domain = packed.value
+    val index = domain.indexAtValidatedOrdinal(2)
+
+    assertEquals(index.ordinal, 2)
+    intercept[IndexOutOfBoundsException] {
+      domain.indexAtValidatedOrdinal(3)
+    }
+
   test("registry canonicalizes supplied structural identity"):
     val original =
       mustRight(DomainRecord.parse("stable", "original label", 5))
