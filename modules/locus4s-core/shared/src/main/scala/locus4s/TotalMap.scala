@@ -30,6 +30,7 @@ final class TotalMap[X, Y] private (
     to.indexAtOrdinal(targets(index.ordinal))
 
   /** Compatibility spelling for total typed lookup. */
+  @deprecated("Use apply; scheduled for removal in 1.0.", "0.1.0")
   def at(index: Index[X]): Index[Y] =
     apply(index)
 

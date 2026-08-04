@@ -66,11 +66,14 @@ short; applications can retain constructor errors in their usual error type.
    unordered support from ordered compact data.
 4. [Maps and relations](concepts/maps-and-relations.md) introduces functions,
    partial functions, certified maps, and sparse relations.
-5. [Fields and aggregation](guides/fields-and-aggregation.md) gathers,
+5. [Compact neighborhood systems](concepts/neighborhood-systems.md) stores
+   sparse rows for an ordered center domain embedded in a larger ambient
+   domain.
+6. [Fields and aggregation](guides/fields-and-aggregation.md) gathers,
    pulls back, and pushes values across domains.
-6. [Persistence and restoration](guides/persistence-and-restoration.md)
+7. [Persistence and restoration](guides/persistence-and-restoration.md)
    reconstructs validated neutral records.
-7. [An imaging-shaped workflow](guides/imaging-shaped-workflow.md) combines the
+8. [An imaging-shaped workflow](guides/imaging-shaped-workflow.md) combines the
    abstractions without putting imaging policy in locus4s.
 
 The [Reference](reference/README.md) section records complexity, compatibility,

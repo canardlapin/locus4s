@@ -38,10 +38,11 @@ hard conflict.
 
 ## Points and lookup
 
-`Point[S]` remains a compatibility alias, but its representation is now
-`Index[S]`, an opaque integer. Use `IndexError` for checked ordinal
-construction. A typed point no longer carries a runtime `domain` field because
-its owner is guaranteed by `S`.
+`Point[S]` remains a pre-1.0 compatibility alias, but new code uses `Index[S]`,
+an opaque integer. Replace `PointError`, `point`, `pointOption`, and `points`
+with `IndexError`, `index`, `indexOption`, and `indices`. These aliases are
+scheduled for removal at 1.0. A typed index does not carry a runtime `domain`
+field because its owner is guaranteed by `S`.
 
 Code that already has `Index[S]` calls a typed operation directly:
 
@@ -85,6 +86,8 @@ finite-domain maps.
 
 Depend on `Field[S, A]` when the caller need not know the storage type.
 Use `VectorField` only when immutable generic vector storage is intended.
+Replace the compatibility name `IndexedField` with one of those two names;
+replace lookup through `at(index)` with `field(index)`.
 
 ## Relations and persistence
 

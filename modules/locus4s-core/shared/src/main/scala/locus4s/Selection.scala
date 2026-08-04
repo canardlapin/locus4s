@@ -52,6 +52,7 @@ sealed trait Selection[S]:
     positions.indices.map(embedding.apply)
 
   /** Compatibility spelling for `indices`. */
+  @deprecated("Use indices; scheduled for removal in 1.0.", "0.1.0")
   final def points: Iterator[Index[S]] =
     indices
 
@@ -154,6 +155,7 @@ object Selection:
     fromOrdinals(space, indices.iterator.map(_.ordinal))
 
   /** Compatibility spelling for `fromIndices`. */
+  @deprecated("Use fromIndices; scheduled for removal in 1.0.", "0.1.0")
   def fromPoints[S](
       space: FiniteDomain[S],
       points: IterableOnce[Index[S]]

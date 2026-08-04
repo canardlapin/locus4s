@@ -9,8 +9,10 @@ enum IndexError:
         s"ordinal $pointOrdinal is outside [0, $size)"
 
 /** Compatibility name for checked point/index construction failures. */
+@deprecated("Use IndexError; scheduled for removal in 1.0.", "0.1.0")
 type PointError = IndexError
 
+@deprecated("Use IndexError; scheduled for removal in 1.0.", "0.1.0")
 object PointError:
   val OutOfBounds = IndexError.OutOfBounds
 
@@ -21,6 +23,7 @@ object Index:
   export FiniteDomain.IndexValue.*
 
 /** Compatibility name: domain points are zero-cost typed indices. */
+@deprecated("Use Index; scheduled for removal in 1.0.", "0.1.0")
 type Point[S] = Index[S]
 
 /** A live finite owner.
@@ -58,10 +61,12 @@ sealed abstract class FiniteDomain[S] private[locus4s] (
     else None
 
   /** Compatibility spelling for `index`. */
+  @deprecated("Use index; scheduled for removal in 1.0.", "0.1.0")
   final def point(ordinal: Int): Either[IndexError, Index[S]] =
     index(ordinal)
 
   /** Compatibility spelling for `indexOption`. */
+  @deprecated("Use indexOption; scheduled for removal in 1.0.", "0.1.0")
   final def pointOption(ordinal: Int): Option[Index[S]] =
     indexOption(ordinal)
 
@@ -81,6 +86,7 @@ sealed abstract class FiniteDomain[S] private[locus4s] (
     Iterator.range(0, size).map(FiniteDomain.unsafeIndex)
 
   /** Compatibility spelling for `indices`. */
+  @deprecated("Use indices; scheduled for removal in 1.0.", "0.1.0")
   final def points: Iterator[Index[S]] =
     indices
 

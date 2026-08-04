@@ -67,6 +67,9 @@ benchmarks justify it.
 | `PartialMap.apply` | O(1) | `Option`; no target index object |
 | `PartialMap.isDefinedAt` | O(1) | none |
 | `PartialMap.definedRegion` | O(n) | defined-region storage |
+| `PartialMap.preimage` | O(n) | one Region |
+| `PartialMap.toRelation` | O(n) | fresh forward CSR and constructor-validation copies |
+| `PartialMap.fibers` | O(n + m) | temporary non-empty-fiber buckets plus fresh converse CSR and constructor-validation copies |
 | `PartialMap.foreachDefined` | O(n) | `Option` result per source in the reference implementation |
 | partial-map composition | O(n) | one primitive target buffer |
 | partial-map image | O(k log k) worst case with output canonicalization | output-sized region storage |
@@ -87,6 +90,14 @@ Injection validation uses expected O(n) hash-index work. Surjection validation
 uses O(n + m) time and O(m) marker storage. Bijection validation combines the
 equal-cardinality check with injection validation. `PartialSurjection` uses the
 same O(n + m) coverage court over defined targets.
+
+`PartialSurjection.fiber` has the same O(n) cost as `PartialMap.preimage`; the
+surjection proof guarantees a non-empty result. Its total-surjection
+composition costs O(n), allocates one primitive target buffer, and preserves
+support. Partial-surjection composition has the same cost and preserves target
+coverage while support may shrink. Target-relabeling equivalence costs O(n +
+m1 + m2), allocates two target-ordinal correspondence arrays, and either checks
+the exact source runtime owner or consumes explicit source alignment.
 
 ## Relations
 
@@ -136,6 +147,22 @@ immutable representation directly and do not call these copying methods.
 
 The selection position domain is a real owner. Gathering preserves it in the
 result type.
+
+## Neighborhood systems
+
+| Operation | Time | Material allocation |
+|---|---:|---|
+| checked construction | O(1) endpoint-owner checks | alignment evidence, relation wrappers, result wrapper, and one composite value |
+| aligned construction | O(1) | relation wrappers and one composite value; immutable payloads are shared |
+| `center(index)` | O(1) | none |
+| `neighborhood(index)` | O(row degree) | one Region proportional to row degree |
+| `foreachNeighbor(index)` | O(row degree) | none per neighbor |
+| center or ambient rebind | O(1) | wrappers only; injection and CSR payloads are shared |
+| centered refinement | O(c log d) worst case | checked result and one wrapper |
+
+`c` is the compact center count. Membership is `Relation[C, S]`, so non-empty
+CSR storage uses `c + 1` row offsets and one target ordinal per membership pair.
+It does not allocate empty rows for the remaining ambient indices.
 
 ## Fields and aggregation
 

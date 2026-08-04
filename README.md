@@ -40,10 +40,25 @@ This is useful when a library needs to:
 - Total, partial, injective, surjective, and bijective maps describe structured
   relationships between domains. `Relation` represents sparse many-to-many
   relationships.
+- `NeighborhoodSystem[C, S]` stores compact ordered neighborhood rows for
+  centers embedded in an ambient domain; `CenteredNeighborhoodSystem` also
+  proves that each center belongs to its own row.
 - `Field[S, A]` associates a value with every index and supports gathering,
   pullback, views, and deterministic aggregation.
 - `DomainRecord`, `DomainRegistry`, and `DomainAlignment` separate persisted
   identity from the particular live owner reconstructed by one program.
+
+The canonical public vocabulary is `Index` for a typed ordinal and `Field` for
+representation-neutral indexed values. The older `Point` and `IndexedField`
+spellings remain source-compatible during the pre-1.0 series, but new code
+should not use them. See the
+[compatibility policy](docs/reference/compatibility.md) for the removal plan.
+
+Runtime ownership and persisted identity answer different questions.
+`sameRuntimeOwnerAs` checks whether two values refer to the exact live owner.
+`samePersistentIdentityAs` compares caller-supplied structural keys.
+`align` turns matching persisted identities into explicit evidence that lets
+code transport immutable values between independently restored live owners.
 
 locus4s supplies these identity and indexing rules, not an imaging data model.
 Geometry, coordinates, image formats, interpolation, neighborhood policy, and

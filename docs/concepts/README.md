@@ -10,6 +10,9 @@ begin to interact.
 - [Maps and relations](maps-and-relations.md) presents the finite-domain
   morphisms used for reindexing, grouping, partial assignment, and sparse
   neighborhoods.
+- [Compact neighborhood systems](neighborhood-systems.md) stores ordered
+  center rows without allocating ambient-sized empty rows or choosing a
+  geometry-specific generation policy.
 
 The concepts deliberately stop short of geometry or imaging policy. A
 downstream library decides what its finite domains mean; locus4s ensures that

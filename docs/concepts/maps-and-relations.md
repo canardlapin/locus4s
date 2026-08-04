@@ -86,6 +86,35 @@ partial.definedRegion.ordinalsInDomainOrder.toVector
 There is no invented background parcel: undefined source indices remain
 undefined.
 
+`preimage(target)` scans the source and materializes one fiber. `fibers`
+materializes all fibers together as `Relation[Y, X]`, with target rows and
+source members. It scans the partial map once, takes O(|X| + |Y|) time, and
+allocates fresh CSR storage. `toRelation` instead returns the defined graph as
+`Relation[X, Y]`. Both materializers return `Either[RelationError, ...]`
+because a non-empty relation cannot represent `Int.MaxValue + 1` row offsets.
+
+`PartialSurjection` exposes the same operations and names its defined source
+region `support`. Its `fiber(target)` is non-empty by construction, although it
+still returns the ordinary `Region[X]` representation. Constructors report
+`PartialMapError` for a wrong count or out-of-range ordinal and
+`CertifiedMapError` when the defined image does not cover the target.
+
+Use `fromOptionalTargetsChecked` at an existential boundary. It rejects a
+foreign target live owner with `SpaceMismatch`, even when sizes or persistent
+keys match. Use `fromOptionalTargetsAligned` only after constructing explicit
+target alignment evidence.
+
+Composition with `Surjection[Y, Z]` preserves the source support. Composition
+with `PartialSurjection[Y, Z]` preserves target coverage but retains only
+sources whose intermediate target belongs to the second map's support. The two
+supports are equal when the second support is all of `Y`.
+
+`equivalentUpToTargetRelabelingChecked` compares partitions only when the
+source live owners are identical. `equivalentUpToTargetRelabelingAligned`
+accepts explicit source alignment. Both methods ignore target names and
+ordinals by deriving a one-to-one relabeling between fibers; target owners may
+therefore differ without being confused.
+
 ## Relations model sparse many-to-many structure
 
 ```scala mdoc:silent
@@ -114,6 +143,9 @@ searchlights.row(firstCenter).ordinalsInDomainOrder.toVector
 Relations use compressed sparse rows. Row traversal is proportional to row
 degree, and sparse composition visits reachable edges rather than allocating a
 target-sized marker for every source.
+
+For a compact ordered collection of relation rows embedded in a larger ambient
+domain, use [NeighborhoodSystem](neighborhood-systems.md).
 
 Continue with [Fields and aggregation](../guides/fields-and-aggregation.md) to
 move values along these maps.
