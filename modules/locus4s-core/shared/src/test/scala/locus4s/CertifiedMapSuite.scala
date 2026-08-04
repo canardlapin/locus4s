@@ -187,6 +187,39 @@ final class CertifiedMapSuite extends FunSuite:
       case Left(_: SpaceMismatch) => ()
       case result                 => fail(s"expected owner mismatch, found $result")
 
+  test("PartialSurjection aligns optional targets from a restored owner"):
+    val canonicalTargets = restored("aligned-partial-targets", 2).space
+    val restoredTargets = restored("aligned-partial-targets", 2).space
+    val alignment = mustRight(canonicalTargets.align(restoredTargets))
+    val targets =
+      Vector(
+        Some(mustRight(restoredTargets.index(1))),
+        None,
+        Some(mustRight(restoredTargets.index(0))),
+        Some(mustRight(restoredTargets.index(1)))
+      )
+
+    assert(!canonicalTargets.sameRuntimeOwnerAs(restoredTargets))
+
+    val partition =
+      mustRight(
+        PartialSurjection.fromOptionalTargetsAligned(
+          source,
+          canonicalTargets,
+          targets,
+          alignment
+        )
+      )
+
+    assertEquals(
+      partition.toPartialMap.optionalTargetOrdinals,
+      Vector(Some(1), None, Some(0), Some(1))
+    )
+    assertEquals(
+      partition.support.ordinalsInDomainOrder.toSeq,
+      Seq(0, 2, 3)
+    )
+
   test("PartialSurjection exposes non-empty fibers and composes with coverage"):
     val parcels = restored("partial-compose-parcels", 2).space
     val groups = restored("partial-compose-groups", 1).space
