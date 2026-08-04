@@ -4,6 +4,8 @@ import locus4s.DomainRecord
 import locus4s.DomainRegistry
 import locus4s.DomainResolution
 import locus4s.Index
+import locus4s.PartialMap
+import locus4s.PartialSurjection
 import locus4s.Relation
 import locus4s.TotalMap
 import munit.FunSuite
@@ -167,6 +169,167 @@ final class AggregationSuite extends FunSuite:
         assert(error.persistentIdentityMatches)
       case Right(_) =>
         fail("checked pushforward must require one live owner")
+
+  test(
+    "partial-map pushforward skips undefined sources, preserves order, and retains empty targets"
+  ):
+    val grouping =
+      mustRight(
+        PartialMap.fromOptionalTargetOrdinals(
+          source,
+          target,
+          Vector(Some(1), None, Some(1), Some(0), None, Some(1))
+        )
+      )
+    val visited = Vector.newBuilder[Int]
+    val result =
+      Aggregation.foldMapBy(grouping, field)(Option.empty[Vector[Int]])(value =>
+        visited += value
+        Some(Vector(value))
+      ):
+        case (None, contribution)      => contribution
+        case (accumulated, None)       => accumulated
+        case (Some(left), Some(right)) => Some(left ++ right)
+
+    assertEquals(visited.result(), Vector(1, 3, 4, 6))
+    assertEquals(
+      result.toVector,
+      Vector(Some(Vector(4)), Some(Vector(1, 3, 6)), None)
+    )
+
+  test("partial-map pushforward consumes a representation-neutral field once"):
+    val grouping =
+      mustRight(
+        PartialMap.fromOptionalTargetOrdinals(
+          source,
+          target,
+          Vector(Some(0), None, Some(1), None, Some(2), None)
+        )
+      )
+    var accesses = Vector.empty[Int]
+    val imageBackedView =
+      new Field[sourceResolution.S, Int]:
+        val space = source
+
+        def apply(index: Index[sourceResolution.S]): Int =
+          accesses :+= index.ordinal
+          (index.ordinal + 1) * 10
+
+    val result =
+      Aggregation.foldMapBy(grouping, imageBackedView)(0)(identity)(_ + _)
+
+    assertEquals(accesses, Vector(0, 2, 4))
+    assertEquals(result.toVector, Vector(10, 30, 50))
+
+  test("partial-map checked pushforward rejects a distinct runtime owner"):
+    val record =
+      mustRight(DomainRecord.parse("checked-partial-source", "left", 3))
+    val renamed =
+      mustRight(DomainRecord.parse("checked-partial-source", "right", 3))
+    val left =
+      mustRight(DomainRegistry.empty.restore(record))
+    val right =
+      mustRight(DomainRegistry.empty.restore(renamed))
+    val output = restored("checked-partial-output", 2).space
+    val grouping =
+      mustRight(
+        PartialMap.fromOptionalTargetOrdinals(
+          left.space,
+          output,
+          Vector(Some(0), None, Some(1))
+        )
+      )
+    val wrongOwner =
+      mustRight(VectorField.fromValues(right.space, Vector(1, 2, 3)))
+
+    Aggregation.foldMapByChecked(grouping, wrongOwner)(0)(identity)(
+      _ + _
+    ) match
+      case Left(error) =>
+        assert(error.persistentIdentityMatches)
+      case Right(_) =>
+        fail("checked partial pushforward must require one live owner")
+
+  test("partial aggregation agrees with equivalent total aggregation"):
+    val total =
+      mustRight(
+        TotalMap.fromTargetOrdinals(
+          source,
+          target,
+          Vector(0, 0, 1, 1, 2, 2)
+        )
+      )
+    val partial =
+      mustRight(
+        PartialMap.fromOptionalTargetOrdinals(
+          source,
+          target,
+          Vector(Some(0), Some(0), Some(1), Some(1), Some(2), Some(2))
+        )
+      )
+    val fromTotal =
+      Aggregation.foldMapBy(total, field)(Vector.empty[Int])(Vector(_))(_ ++ _)
+    val fromPartial =
+      Aggregation.foldMapBy(partial, field)(Vector.empty[Int])(Vector(_))(
+        _ ++ _
+      )
+
+    assertEquals(fromPartial.toVector, fromTotal.toVector)
+
+  test("partial-surjection overload delegates and every result is non-empty"):
+    val partial =
+      mustRight(
+        PartialMap.fromOptionalTargetOrdinals(
+          source,
+          target,
+          Vector(Some(2), None, Some(0), Some(2), None, Some(1))
+        )
+      )
+    val surjection = mustRight(PartialSurjection.fromPartialMap(partial))
+    val combine =
+      (left: Option[Vector[Int]], right: Option[Vector[Int]]) =>
+        (left, right) match
+          case (None, contribution) => contribution
+          case (accumulated, None)  => accumulated
+          case (Some(a), Some(b))   => Some(a ++ b)
+    val direct =
+      Aggregation.foldMapBy(partial, field)(Option.empty[Vector[Int]])(value =>
+        Some(Vector(value))
+      )(combine)
+    val certified =
+      Aggregation.foldMapBy(surjection, field)(Option.empty[Vector[Int]])(value =>
+        Some(Vector(value))
+      )(combine)
+
+    assertEquals(certified.toVector, direct.toVector)
+    assert(certified.toVector.forall(_.nonEmpty))
+
+  test("partial-map aggregation covers empty and singleton domains"):
+    val empty = restored("partial-empty", 0).space
+    val emptyGrouping = PartialMap.empty(empty, empty)
+    val emptyField = VectorField.tabulate(empty)(_.ordinal)
+    assertEquals(
+      Aggregation.foldMapBy(emptyGrouping, emptyField)(0)(identity)(_ + _).toVector,
+      Vector.empty
+    )
+
+    val singletonSource = restored("partial-single-source", 1).space
+    val singletonTarget = restored("partial-single-target", 1).space
+    val singletonGrouping =
+      mustRight(
+        PartialMap.fromOptionalTargetOrdinals(
+          singletonSource,
+          singletonTarget,
+          Vector(Some(0))
+        )
+      )
+    val singletonField = VectorField.tabulate(singletonSource)(_ => 7)
+    assertEquals(
+      Aggregation
+        .foldMapBy(singletonGrouping, singletonField)(0)(identity)(_ + _)
+        .toVector,
+      Vector(7)
+    )
 
   private def restored(id: String, size: Int): DomainResolution =
     val record = mustRight(DomainRecord.parse(id, id, size))
