@@ -254,7 +254,7 @@ final class CertifiedMapSuite extends FunSuite:
       Seq(2)
     )
     assertEquals(
-      mustRight(partition.fibers).converse,
+      mustRight(mustRight(partition.fibers).converse),
       mustRight(partition.toRelation)
     )
 

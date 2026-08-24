@@ -107,7 +107,7 @@ the exact source runtime owner or consumes explicit source alignment.
 | `row(source)` | O(d) | O(d) |
 | `hasTargets(source)` | O(1) | none |
 | `isRelated(source, target)` | O(log d) | none |
-| converse | O(m + e) | O(m + e) |
+| converse | O(m + e) | O(m + e), returned in `Either` |
 | union/intersection | O(n + e1 + e2) | output-sized CSR |
 | subset | O(n + e1 + e2) worst case | none |
 | relation image | visited source rows and edges, plus O(v log v) worst-case canonicalization for v visited targets | output-sized region storage |
@@ -115,7 +115,7 @@ the exact source runtime owner or consumes explicit source alignment.
 | endpoint rebind | O(1) | one wrapper; CSR storage is shared |
 | `fromOrdinalRows` | input rows plus per-row sort/deduplication | copied output CSR |
 | `fromCsr` | O(n + e) validation | copied CSR |
-| `tabulate` | O(n + e) plus callback work | output CSR |
+| `tabulate` | O(n + e) plus callback work | output CSR returned in `Either` |
 | checked composition/lattice/image | underlying operation plus O(1) endpoint checks | `Either` plus underlying result |
 
 Relations use compressed sparse rows: row offsets plus one contiguous sorted,
@@ -125,8 +125,9 @@ marker for each source row.
 An empty relation has a special constant-size representation, including when a
 domain declares `Int.MaxValue` elements. A non-empty CSR relation cannot have
 `Int.MaxValue` source rows because an array cannot store the required
-`sourceSize + 1` offsets; construction reports
-`RelationError.RowOffsetCountOverflow`.
+`sourceSize + 1` offsets. `identity`, `fromOrdinalRows`, `fromCsr`, `tabulate`,
+and `converse` report `RelationError.RowOffsetCountOverflow` before attempting
+that allocation. The constructors and `converse` therefore return `Either`.
 
 The public `csr` and `ordinalRows` methods make defensive copies. They are
 dynamic-boundary and compatibility operations. Core algorithms traverse the

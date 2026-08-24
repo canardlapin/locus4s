@@ -137,8 +137,10 @@ final class Relation[X, Y] private (
       )
     else Left(to.mismatch(that.from))
 
-  def converse: Relation[Y, X] =
-    if isEmpty then Relation.empty(to, from)
+  def converse: Either[RelationError, Relation[Y, X]] =
+    if isEmpty then Right(Relation.empty(to, from))
+    else if to.size == Int.MaxValue then
+      Left(RelationError.RowOffsetCountOverflow(to.size))
     else
       val counts = Array.ofDim[Int](to.size)
       var position = 0
@@ -166,7 +168,7 @@ final class Relation[X, Y] private (
           rowPosition += 1
         source += 1
 
-      Relation.fromOwnedCsr(to, from, offsets, reversedTargets)
+      Right(Relation.fromOwnedCsr(to, from, offsets, reversedTargets))
 
   def union(that: Relation[X, Y]): Relation[X, Y] =
     if isEmpty then
@@ -367,52 +369,59 @@ object Relation:
       true
     )
 
-  def identity[S](space: FiniteDomain[S]): Relation[S, S] =
-    if space.size == 0 then empty(space, space)
+  def identity[S](
+      space: FiniteDomain[S]
+  ): Either[RelationError, Relation[S, S]] =
+    if space.size == Int.MaxValue then
+      Left(RelationError.RowOffsetCountOverflow(space.size))
+    else if space.size == 0 then Right(empty(space, space))
     else
       val offsets = Array.tabulate(space.size + 1)(ordinal => ordinal)
       val targets = Array.tabulate(space.size)(ordinal => ordinal)
-      fromOwnedCsr(space, space, offsets, targets)
+      Right(fromOwnedCsr(space, space, offsets, targets))
 
   def fromOrdinalRows[X, Y](
       from: FiniteDomain[X],
       to: FiniteDomain[Y],
       inputRows: IterableOnce[IterableOnce[Int]]
   ): Either[RelationError, Relation[X, Y]] =
-    val rows = inputRows.iterator.map(_.iterator.toArray).toArray
-    if rows.length != from.size then
-      Left(RelationError.WrongRowCount(from.size, rows.length))
+    if from.size == Int.MaxValue then
+      Left(RelationError.RowOffsetCountOverflow(from.size))
     else
-      val offsets = Array.ofDim[Int](from.size + 1)
-      val output = Array.newBuilder[Int]
-      var outputSize = 0
-      var source = 0
-      var error = Option.empty[RelationError]
-      while source < rows.length && error.isEmpty do
-        val input = rows(source)
-        var position = 0
-        while position < input.length && error.isEmpty do
-          val target = input(position)
-          if !to.containsOrdinal(target) then
-            error = Some(
-              RelationError.TargetOutOfBounds(
-                source,
-                position,
-                target,
-                to.size
+      val rows = inputRows.iterator.map(_.iterator.toArray).toArray
+      if rows.length != from.size then
+        Left(RelationError.WrongRowCount(from.size, rows.length))
+      else
+        val offsets = Array.ofDim[Int](from.size + 1)
+        val output = Array.newBuilder[Int]
+        var outputSize = 0
+        var source = 0
+        var error = Option.empty[RelationError]
+        while source < rows.length && error.isEmpty do
+          val input = rows(source)
+          var position = 0
+          while position < input.length && error.isEmpty do
+            val target = input(position)
+            if !to.containsOrdinal(target) then
+              error = Some(
+                RelationError.TargetOutOfBounds(
+                  source,
+                  position,
+                  target,
+                  to.size
+                )
               )
-            )
-          position += 1
-        val canonical = sortedDistinct(input)
-        output ++= canonical
-        outputSize += canonical.length
-        offsets(source + 1) = outputSize
-        source += 1
+            position += 1
+          val canonical = sortedDistinct(input)
+          output ++= canonical
+          outputSize += canonical.length
+          offsets(source + 1) = outputSize
+          source += 1
 
-      error match
-        case Some(value) => Left(value)
-        case None        =>
-          Right(fromOwnedCsr(from, to, offsets, output.result()))
+        error match
+          case Some(value) => Left(value)
+          case None        =>
+            Right(fromOwnedCsr(from, to, offsets, output.result()))
 
   def fromCsr[X, Y](
       from: FiniteDomain[X],
@@ -420,89 +429,98 @@ object Relation:
       inputOffsets: IterableOnce[Int],
       inputTargets: IterableOnce[Int]
   ): Either[RelationError, Relation[X, Y]] =
-    val offsets = inputOffsets.iterator.toArray
-    val targets = inputTargets.iterator.toArray
-    if targets.isEmpty && offsets.isEmpty then Right(empty(from, to))
-    else if from.size == Int.MaxValue then
-      Left(RelationError.RowOffsetCountOverflow(from.size))
-    else if offsets.length != from.size + 1 then
-      Left(
-        RelationError.WrongOffsetCount(
-          from.size + 1,
-          offsets.length
-        )
-      )
-    else if offsets.headOption.exists(_ != 0) then
-      Left(RelationError.FirstOffsetNotZero(offsets(0)))
+    val offsetIterator = inputOffsets.iterator
+    val targetIterator = inputTargets.iterator
+    if from.size == Int.MaxValue then
+      if !offsetIterator.hasNext && !targetIterator.hasNext then Right(empty(from, to))
+      else Left(RelationError.RowOffsetCountOverflow(from.size))
     else
-      var offsetPosition = 1
-      var error = Option.empty[RelationError]
-      while offsetPosition < offsets.length && error.isEmpty do
-        if offsets(offsetPosition) < offsets(offsetPosition - 1) then
-          error = Some(
-            RelationError.OffsetsNotMonotonic(
-              offsetPosition,
-              offsets(offsetPosition - 1),
-              offsets(offsetPosition)
-            )
-          )
-        offsetPosition += 1
-
-      if error.isEmpty && offsets.lastOption.exists(_ != targets.length) then
-        error = Some(
-          RelationError.FinalOffsetMismatch(
-            targets.length,
-            offsets.last
+      val offsets = offsetIterator.toArray
+      val targets = targetIterator.toArray
+      if targets.isEmpty && offsets.isEmpty then Right(empty(from, to))
+      else if offsets.length != from.size + 1 then
+        Left(
+          RelationError.WrongOffsetCount(
+            from.size + 1,
+            offsets.length
           )
         )
-
-      var source = 0
-      while source < from.size && error.isEmpty do
-        val start = offsets(source)
-        val end = offsets(source + 1)
-        var position = start
-        while position < end && error.isEmpty do
-          val target = targets(position)
-          if !to.containsOrdinal(target) then
+      else if offsets.headOption.exists(_ != 0) then
+        Left(RelationError.FirstOffsetNotZero(offsets(0)))
+      else
+        var offsetPosition = 1
+        var error = Option.empty[RelationError]
+        while offsetPosition < offsets.length && error.isEmpty do
+          if offsets(offsetPosition) < offsets(offsetPosition - 1) then
             error = Some(
-              RelationError.TargetOutOfBounds(
-                source,
-                position - start,
-                target,
-                to.size
+              RelationError.OffsetsNotMonotonic(
+                offsetPosition,
+                offsets(offsetPosition - 1),
+                offsets(offsetPosition)
               )
             )
-          else if position > start && targets(position - 1) >= target then
-            error = Some(
-              RelationError.RowNotStrictlyIncreasing(
-                source,
-                position - start,
-                targets(position - 1),
-                target
-              )
-            )
-          position += 1
-        source += 1
+          offsetPosition += 1
 
-      error match
-        case Some(value) => Left(value)
-        case None        =>
-          Right(fromOwnedCsr(from, to, offsets, targets))
+        if error.isEmpty && offsets.lastOption.exists(_ != targets.length) then
+          error = Some(
+            RelationError.FinalOffsetMismatch(
+              targets.length,
+              offsets.last
+            )
+          )
+
+        var source = 0
+        while source < from.size && error.isEmpty do
+          val start = offsets(source)
+          val end = offsets(source + 1)
+          var position = start
+          while position < end && error.isEmpty do
+            val target = targets(position)
+            if !to.containsOrdinal(target) then
+              error = Some(
+                RelationError.TargetOutOfBounds(
+                  source,
+                  position - start,
+                  target,
+                  to.size
+                )
+              )
+            else if position > start && targets(position - 1) >= target then
+              error = Some(
+                RelationError.RowNotStrictlyIncreasing(
+                  source,
+                  position - start,
+                  targets(position - 1),
+                  target
+                )
+              )
+            position += 1
+          source += 1
+
+        error match
+          case Some(value) => Left(value)
+          case None        =>
+            Right(fromOwnedCsr(from, to, offsets, targets))
 
   def tabulate[X, Y](
       from: FiniteDomain[X],
       to: FiniteDomain[Y]
-  )(row: Index[X] => Region[Y]): Relation[X, Y] =
-    val offsets = Array.ofDim[Int](from.size + 1)
-    val output = Array.newBuilder[Int]
-    var outputSize = 0
-    from.foreachIndex: source =>
-      val region = row(source)
-      region.foreachOrdinal: target =>
-        output += target
-        outputSize += 1
-      offsets(source.ordinal + 1) = outputSize
-    fromOwnedCsr(from, to, offsets, output.result())
+  )(
+      row: Index[X] => Region[Y]
+  ): Either[RelationError, Relation[X, Y]] =
+    if from.size == Int.MaxValue then
+      Left(RelationError.RowOffsetCountOverflow(from.size))
+    else
+      val offsets = Array.ofDim[Int](from.size + 1)
+      val output = Array.newBuilder[Int]
+      var outputSize = 0
+      from.foreachIndex: source =>
+        val region = row(source)
+        region.foreachOrdinal: target =>
+          output += target
+          outputSize += 1
+        offsets(source.ordinal + 1) = outputSize
+      Right(fromOwnedCsr(from, to, offsets, output.result()))
 
   private def fromOwnedCsr[X, Y](
       from: FiniteDomain[X],

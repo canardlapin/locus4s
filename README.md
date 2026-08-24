@@ -119,16 +119,20 @@ runtime dependencies.
 
 ## Status and installation
 
-locus4s is pre-1.0 and currently built as `0.1.0-SNAPSHOT`; no stable release is
-advertised yet. To try it from this checkout, publish the required projection
-locally and use the displayed snapshot version:
+locus4s uses tag-derived immutable releases on the early-semver `0.1` line.
+Untagged checkouts derive unique snapshot versions and cannot publish stable
+coordinates. For an available release version such as `0.1.0`, add:
 
-```text
-sbt locus4s-coreJVM/publishLocal locus4s-dataJVM/publishLocal
+```scala
+libraryDependencies ++= Seq(
+  "io.github.canardlapin" %% "locus4s-core" % "0.1.0",
+  "io.github.canardlapin" %% "locus4s-data" % "0.1.0"
+)
 ```
 
-The guide records the eventual sbt coordinates without implying that the
-snapshot is available from a public repository.
+Use `%%%` for Scala.js. Add `locus4s-laws` to downstream test builds that reuse
+the public law functions. Confirm the selected version in GitHub Releases or
+Maven Central before resolving it.
 
 ## Documentation
 
@@ -147,8 +151,8 @@ sbt docsCheck
 ```
 
 `docsCheck` compiles the JVM Scaladoc for all three modules, evaluates the mdoc
-examples, validates links, and renders the Laika site. Site deployment is not
-configured.
+examples, validates links, and renders the Laika site. GitHub Pages deploys the
+rendered site from `main`.
 
 ## Development gates
 

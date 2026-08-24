@@ -110,13 +110,13 @@ final class LocusCorePropertiesSuite extends ScalaCheckSuite:
         first.andThen(second).ordinalRows.map(_.toVector).toVector,
         compose(firstModel, secondModel)
       )
-      assertEquals(first.converse.converse, first)
+      assertEquals(mustRight(mustRight(first.converse).converse), first)
       assertEquals(
         first.andThen(second).andThen(third),
         first.andThen(second.andThen(third))
       )
-      assertEquals(Relation.identity(space).andThen(first), first)
-      assertEquals(first.andThen(Relation.identity(space)), first)
+      assertEquals(mustRight(Relation.identity(space)).andThen(first), first)
+      assertEquals(first.andThen(mustRight(Relation.identity(space))), first)
       assertEquals(
         first.union(second).ordinalRows.map(_.toSet).toVector,
         firstModel.zip(secondModel).map((left, right) => left.toSet union right.toSet)
@@ -167,7 +167,7 @@ final class LocusCorePropertiesSuite extends ScalaCheckSuite:
       val fiberUnion = fibers.image(Region.whole(target))
 
       assertEquals(fiberUnion, mapping.definedRegion)
-      assertEquals(fibers.converse, graph)
+      assertEquals(mustRight(fibers.converse), graph)
       target.foreachIndex: left =>
         target.foreachIndex: right =>
           if left != right then

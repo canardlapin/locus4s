@@ -107,7 +107,7 @@ final class NeighborhoodSystemSuite extends FunSuite:
     val singletonSystem =
       mustRight(
         CenteredNeighborhoodSystem.fromIdentityCenters(
-          Relation.identity(singleton)
+          mustRight(Relation.identity(singleton))
         )
       )
     val only = mustRight(singleton.index(0))
