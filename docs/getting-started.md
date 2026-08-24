@@ -18,9 +18,9 @@ Use `%%%` instead of `%%` in a Scala.js or cross-project build. Add
 `locus4s-laws` only when you want to reuse the law functions in a downstream
 test suite.
 
-The current build is a snapshot rather than a published release. From this
-checkout, publish the required JVM or Scala.js projection locally before using
-the coordinates in another project.
+The documentation substitutes the exact released version for `@VERSION@`.
+Untagged source builds remain unique snapshots; use an immutable GitHub/Central
+release in ordinary downstream builds.
 
 ## Register a persistent domain
 

@@ -10,6 +10,7 @@ import locus4s.PartialMap
 import locus4s.PartialSurjection
 import locus4s.Region
 import locus4s.Relation
+import locus4s.RelationError
 import locus4s.Selection
 import locus4s.Surjection
 import locus4s.TotalMap
@@ -301,9 +302,14 @@ object TotalMapLaws:
       source.subsetOf(mapping.pullback(target))
 
 object RelationLaws:
-  def categoryIdentity[X, Y](relation: Relation[X, Y]): Boolean =
-    Relation.identity(relation.from).andThen(relation) == relation &&
-      relation.andThen(Relation.identity(relation.to)) == relation
+  def categoryIdentity[X, Y](
+      relation: Relation[X, Y]
+  ): Either[RelationError, Boolean] =
+    for
+      fromIdentity <- Relation.identity(relation.from)
+      toIdentity <- Relation.identity(relation.to)
+    yield fromIdentity.andThen(relation) == relation &&
+      relation.andThen(toIdentity) == relation
 
   def categoryAssociativity[W, X, Y, Z](
       first: Relation[W, X],
@@ -316,10 +322,14 @@ object RelationLaws:
   def converseLaws[X, Y, Z](
       first: Relation[X, Y],
       second: Relation[Y, Z]
-  ): Boolean =
-    first.converse.converse == first &&
-      first.andThen(second).converse ==
-      second.converse.andThen(first.converse)
+  ): Either[RelationError, Boolean] =
+    for
+      firstConverse <- first.converse
+      doubleConverse <- firstConverse.converse
+      composedConverse <- first.andThen(second).converse
+      secondConverse <- second.converse
+    yield doubleConverse == first &&
+      composedConverse == secondConverse.andThen(firstConverse)
 
   def latticeLaws[X, Y](
       left: Relation[X, Y],

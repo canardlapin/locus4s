@@ -58,6 +58,7 @@ final class PerformanceContractsSuite extends munit.FunSuite:
     assert(relation.isEmpty)
     assertEquals(relation.csr.rowOffsets.length, 0)
     assertEquals(relation.csr.targets.length, 0)
+    assert(mustRight(Relation.fromCsr(huge, huge, Vector.empty, Vector.empty)).isEmpty)
     assertEquals(
       Relation.fromCsr(
         huge,
@@ -67,6 +68,54 @@ final class PerformanceContractsSuite extends munit.FunSuite:
       ),
       Left(RelationError.RowOffsetCountOverflow(Int.MaxValue))
     )
+    assertEquals(
+      Relation.identity(huge),
+      Left(RelationError.RowOffsetCountOverflow(Int.MaxValue))
+    )
+    assertEquals(
+      Relation.tabulate(huge, huge)(_ => Region.empty(huge)),
+      Left(RelationError.RowOffsetCountOverflow(Int.MaxValue))
+    )
+
+  test("relation constructors reject impossible row offsets before consuming input"):
+    val huge = ephemeral("maximum-constructor-source", Int.MaxValue)
+    val target = ephemeral("maximum-constructor-target", 1)
+    var consumed = false
+    val rows = new IterableOnce[IterableOnce[Int]]:
+      def iterator: Iterator[IterableOnce[Int]] =
+        consumed = true
+        Iterator.empty
+
+    assertEquals(
+      Relation.fromOrdinalRows(huge, target, rows),
+      Left(RelationError.RowOffsetCountOverflow(Int.MaxValue))
+    )
+    assert(!consumed)
+
+    var offsetConsumed = false
+    var targetConsumed = false
+    val offsets = oneValueWithoutEagerConsumption:
+      offsetConsumed = true
+    val targets = oneValueWithoutEagerConsumption:
+      targetConsumed = true
+    assertEquals(
+      Relation.fromCsr(huge, target, offsets, targets),
+      Left(RelationError.RowOffsetCountOverflow(Int.MaxValue))
+    )
+    assert(!offsetConsumed)
+    assert(!targetConsumed)
+
+  test("converse reports an impossible non-empty target-row materialization"):
+    val source = ephemeral("converse-small-source", 1)
+    val hugeTarget = ephemeral("converse-maximum-target", Int.MaxValue)
+    val relation =
+      mustRight(Relation.fromCsr(source, hugeTarget, Vector(0, 1), Vector(0)))
+
+    assertEquals(
+      relation.converse,
+      Left(RelationError.RowOffsetCountOverflow(Int.MaxValue))
+    )
+    assert(mustRight(Relation.empty(source, hugeTarget).converse).isEmpty)
 
   test("fiber materialization handles the CSR row-offset limit explicitly"):
     val source = ephemeral("fiber-limit-source", 2)
@@ -109,6 +158,19 @@ final class PerformanceContractsSuite extends munit.FunSuite:
 
   private def ephemeral(name: String, size: Int): FiniteDomain[?] =
     mustRight(FiniteDomain.ephemeral(name, size)).value
+
+  private def oneValueWithoutEagerConsumption(onNext: => Unit): IterableOnce[Int] =
+    new IterableOnce[Int]:
+      def iterator: Iterator[Int] =
+        new Iterator[Int]:
+          private var available = true
+
+          def hasNext: Boolean = available
+
+          def next(): Int =
+            available = false
+            onNext
+            0
 
   private def mustRight[E, A](value: Either[E, A]): A =
     value match

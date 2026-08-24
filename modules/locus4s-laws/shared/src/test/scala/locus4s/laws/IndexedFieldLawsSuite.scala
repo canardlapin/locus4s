@@ -93,7 +93,7 @@ final class IndexedFieldLawsSuite extends ScalaCheckSuite:
           )
         )
         assert(TotalMapLaws.imagePullbackAdjunction(first, region, region))
-        assert(RelationLaws.categoryIdentity(relationA))
+        assert(mustRight(RelationLaws.categoryIdentity(relationA)))
         assert(
           RelationLaws.categoryAssociativity(
             relationA,
@@ -101,7 +101,7 @@ final class IndexedFieldLawsSuite extends ScalaCheckSuite:
             relationC
           )
         )
-        assert(RelationLaws.converseLaws(relationA, relationB))
+        assert(mustRight(RelationLaws.converseLaws(relationA, relationB)))
         assert(
           RelationLaws.latticeLaws(
             relationA,
@@ -135,6 +135,13 @@ final class IndexedFieldLawsSuite extends ScalaCheckSuite:
       assert(CertifiedMapLaws.bijectionInverse(bijection))
       assert(SelectionLaws.injectionAndSupport(selection))
       assert(FieldLaws.gatherUsesPositionDomain(field, selection)(_ == _))
+
+  test("relation laws preserve an unrepresentable identity failure"):
+    val huge = restored("maximum-law-domain", Int.MaxValue).space
+    assertEquals(
+      RelationLaws.categoryIdentity(Relation.empty(huge, huge)),
+      Left(locus4s.RelationError.RowOffsetCountOverflow(Int.MaxValue))
+    )
 
   property("partial-map composition is associative"):
     forAll(partialCase): (size, firstValues, secondValues, thirdValues) =>

@@ -1,0 +1,7 @@
+project	coordinate	platform	status
+locus4s-coreJVM	io.github.canardlapin:locus4s-core_3	JVM	admitted
+locus4s-coreJS	io.github.canardlapin:locus4s-core_sjs1_3	Scala.js	admitted
+locus4s-dataJVM	io.github.canardlapin:locus4s-data_3	JVM	admitted
+locus4s-dataJS	io.github.canardlapin:locus4s-data_sjs1_3	Scala.js	admitted
+locus4s-lawsJVM	io.github.canardlapin:locus4s-laws_3	JVM	admitted
+locus4s-lawsJS	io.github.canardlapin:locus4s-laws_sjs1_3	Scala.js	admitted

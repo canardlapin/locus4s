@@ -14,12 +14,12 @@ Before 1.0:
 - image4s and neuroimaging libraries should isolate locus4s behind small bridge
   modules rather than expose its evolving concrete API deeply.
 
-After the first public baseline is selected, the build will add binary
-compatibility checking for JVM artifacts. That baseline should be chosen only
-after the ownership, persistence, representation, and downstream adoption
-gates are complete. Scala.js source and linker compatibility will continue to
-be checked by compilation and optimized linking because JVM binary tools do not
-cover JavaScript artifacts.
+The build wires sbt-version-policy, MiMa, and TASTy-MiMa for all six admitted
+artifacts. Stable `0.1.0` establishes the first baseline after the ownership,
+persistence, representation, packaging, and downstream adoption gates pass.
+Subsequent `0.1.x` work compares against that immutable coordinate. Scala.js
+also retains source compilation and optimized-link checks because JVM binary
+tools alone do not certify JavaScript artifacts.
 
 The repository currently treats the following as stable design constraints,
 even before a stable binary baseline:

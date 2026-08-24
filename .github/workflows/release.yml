@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags: ["v0.1.*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and inspect an unsigned bundle without uploading it"
+        required: true
+        default: true
+        type: boolean
+      candidate_version:
+        description: "Synthetic 0.1 milestone or RC version used only by a manual dry run"
+        required: true
+        default: "0.1.0-RC1"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Exact-candidate release court
+    if: github.event_name == 'push' || inputs.dry_run == true
+    runs-on: ubuntu-latest
+    env:
+      DRY_RUN_VERSION: ${{ inputs.candidate_version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Require a locus4s 0.1 release tag
+        if: github.event_name == 'push'
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v0\.1\.[0-9]+(-(M|RC)[1-9][0-9]*)?$ ]]; then
+            echo "locus4s releases require v0.1.x, v0.1.x-Mn, or v0.1.x-RCn; got $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          if [[ "$(git cat-file -t "$GITHUB_REF_NAME")" != "tag" ]]; then
+            echo "locus4s releases require an annotated signed tag" >&2
+            exit 1
+          fi
+          if ! git cat-file -p "$GITHUB_REF_NAME" | grep -Eq '^-----BEGIN (PGP|SSH) SIGNATURE-----$'; then
+            echo "locus4s releases require a GPG- or SSH-signed tag" >&2
+            exit 1
+          fi
+      - name: Validate the synthetic dry-run version
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ ! "$DRY_RUN_VERSION" =~ ^0\.1\.[0-9]+-(M|RC)[1-9][0-9]*$ ]]; then
+            echo "manual dry runs require a 0.1 milestone or RC version; got $DRY_RUN_VERSION" >&2
+            exit 1
+          fi
+      - name: Run the tag-derived court
+        if: github.event_name == 'push'
+        run: tools/release-court.sh --tag-derived
+      - name: Run the synthetic dry-run court
+        if: github.event_name == 'workflow_dispatch'
+        run: tools/release-court.sh "$DRY_RUN_VERSION"
+
+  package:
+    name: Stage and consume all six artifacts
+    needs: preflight
+    runs-on: ubuntu-latest
+    env:
+      DRY_RUN_VERSION: ${{ inputs.candidate_version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Import the ephemeral signing key
+        if: github.event_name == 'push'
+        env:
+          PGP_SECRET: ${{ secrets.PGP_SECRET }}
+        run: printf '%s' "$PGP_SECRET" | base64 --decode | gpg --batch --import
+      - name: Stage signed tag-derived artifacts
+        if: github.event_name == 'push'
+        env:
+          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+        run: sbt releaseSigned
+      - name: Stage unsigned synthetic artifacts
+        if: github.event_name == 'workflow_dispatch'
+        run: sbt "set ThisBuild / version := \"$DRY_RUN_VERSION\"" releaseUnsigned
+      - name: Resolve the staged version
+        id: candidate
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$DRY_RUN_VERSION" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Compile clean coordinate-based JVM and Scala.js consumers
+        run: tools/verify-release-consumer.sh '${{ steps.candidate.outputs.version }}' target/sona-staging
+      - uses: actions/upload-artifact@v4
+        with:
+          name: central-staging
+          path: target/sona-staging
+          if-no-files-found: error
+
+  assemble-and-upload:
+    name: Validate one Central Portal bundle
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: central-staging
+          path: target/central-staging
+      - name: Assemble the Central bundle
+        run: |
+          mkdir -p target/central-bundle-tree
+          cp -R target/central-staging/. target/central-bundle-tree/
+          (cd target/central-bundle-tree && zip -X -q -r ../central-bundle.zip .)
+      - name: Verify exact Maven layout, checksums, and signatures
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            tools/verify-central-bundle.sh --require-signatures target/central-bundle.zip
+          else
+            tools/verify-central-bundle.sh target/central-bundle.zip
+          fi
+      - name: Upload a user-managed Central Portal deployment
+        if: github.event_name == 'push'
+        env:
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+        run: |
+          token=$(printf '%s:%s' "$SONATYPE_USERNAME" "$SONATYPE_PASSWORD" | base64 | tr -d '\n')
+          url="https://central.sonatype.com/api/v1/publisher/upload?name=locus4s-${GITHUB_REF_NAME}&publishingType=USER_MANAGED"
+          deployment=$(curl --fail-with-body --silent --show-error --request POST \
+            --header "Authorization: Bearer $token" \
+            --form "bundle=@target/central-bundle.zip" \
+            "$url")
+          {
+            echo "### Central Portal deployment"
+            echo "Uploaded in USER_MANAGED mode; publish after Central validation."
+            echo
+            printf 'Deployment ID: `%s`\n' "$deployment"
+          } >> "$GITHUB_STEP_SUMMARY"
