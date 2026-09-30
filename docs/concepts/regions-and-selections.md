@@ -40,6 +40,21 @@ Typed union, intersection, difference, xor, complement, membership, and subset
 tests are total. `Region.empty` and `Region.whole` use constant-size
 representations; sparse regions store sorted distinct primitive ordinals.
 
+## Overlap similarity
+
+```scala mdoc
+left.dice(right)
+left.jaccard(right)
+```
+
+Dice is twice the intersection cardinality divided by the sum of the two
+cardinalities. Jaccard divides the intersection cardinality by the union
+cardinality. Both range from zero to one; two empty regions have similarity
+one. Counts are widened before arithmetic, including for compact whole regions.
+At dynamic boundaries, `diceChecked` and `jaccardChecked` require the same live
+domain owner, even for empty operands. Matching persisted identity alone is
+insufficient: explicitly align and rebind independently restored regions first.
+
 ## Selection order is data
 
 An ordered extraction cannot be represented faithfully by its support alone:

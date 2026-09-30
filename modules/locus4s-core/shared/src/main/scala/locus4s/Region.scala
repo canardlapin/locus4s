@@ -172,6 +172,30 @@ final class Region[S] private (
           ordinal += 1
         Region.fromSortedOwned(space, result)
 
+  /** Dice similarity, 2 |A intersect B| / (|A| + |B|). Two empty regions have
+    * similarity 1. Counts are widened before addition.
+    */
+  def dice(that: Region[S]): Double =
+    val denominator = cardinality.toDouble + that.cardinality.toDouble
+    if denominator == 0.0 then 1.0
+    else 2.0 * intersect(that).cardinality.toDouble / denominator
+
+  /** Jaccard similarity, |A intersect B| / |A union B|. Two empty regions have
+    * similarity 1. Counts are widened before addition.
+    */
+  def jaccard(that: Region[S]): Double =
+    val intersection = intersect(that).cardinality.toDouble
+    val union = cardinality.toDouble + that.cardinality.toDouble - intersection
+    if union == 0.0 then 1.0 else intersection / union
+
+  /** Dynamic-boundary Dice similarity; even empty regions require one live owner. */
+  def diceChecked[T](that: Region[T]): Either[SpaceMismatch, Double] =
+    checkedOperand(that).map(dice)
+
+  /** Dynamic-boundary Jaccard similarity; even empty regions require one live owner. */
+  def jaccardChecked[T](that: Region[T]): Either[SpaceMismatch, Double] =
+    checkedOperand(that).map(jaccard)
+
   /** Checked dynamic-boundary union requiring one live owner. */
   def unionChecked[T](
       that: Region[T]

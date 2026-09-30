@@ -35,6 +35,7 @@ an owned object for each ordinal.
 | sparse membership | O(log k) | none |
 | sparse traversal | O(k) | iterator machinery only when an iterator is requested |
 | sparse union/intersection/difference | O(k1 + k2) | output-sized primitive buffer |
+| Dice/Jaccard | O(k1 + k2) for two sparse regions; O(1) if either is empty/whole | intersection-sized primitive buffer for sparse pairs; otherwise constant |
 | sparse xor | O(k1 + k2) | output-sized primitive buffer |
 | complement | O(1) for empty/whole; O(n) for sparse | one small region or complement-sized primitive buffer |
 | `Region.tabulate` | O(n) | output-sized sparse buffer |
